@@ -1,0 +1,44 @@
+Operational Period (years),,Operation Period (seconds),,,,System Capacity (kw),,System Capacity (Gw),,,Total Life GJ,,,,,,,
+10,,3.16E+08,,,,500,,0.0005,,,157800,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,Diesel Cost per GJ,,Total System Efficiency ,,,$ per kw of capacity,,,Fuel Costs,,Maintenance Costs Over 10 Years,,Total System Costs,,Final Costs
+,,,, $25.40 ,,40%,,, $700.00 ,,," $10,020,300.00 ",," $268,000.00 ",," $350,000.00 ",," $10,638,300.00 "
+,,,,,,,,,,,,,,,,,,
+,,Costs Today,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $30.80 ,,50%,,," $7,000.00 ",,," $9,720,480.00 ",," $635,000.00 ",," $3,500,000.00 ",," $13,855,480.00 "
+,,,,,,,,,,,,,,,,,,
+,,,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $21.70 ,,45%,,," $10,000.00 ",,," $7,609,466.67 ",," $800,000.00 ",," $5,000,000.00 ",," $13,409,466.67 "
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,Diesel Cost per GJ,,Total System Efficiency ,,,$ per kw of capacity,,,Fuel Costs,,Maintenance Costs Over 10 Years,,Total System Costs,,Final Costs
+,,,, $20.00 ,,40%,,, $700.00 ,,," $7,890,000.00 ",," $268,000.00 ",," $350,000.00 ",," $8,508,000.00 "
+,,,,,,,,,,,,,,,,,,
+,,Green Transition,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $18.00 ,,50%,,," $7,000.00 ",,," $5,680,800.00 ",," $635,000.00 ",," $3,500,000.00 ",," $9,815,800.00 "
+,,,,,,,,,,,,,,,,,,
+,,,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $19.00 ,,45%,,," $10,000.00 ",,," $6,662,666.67 ",," $800,000.00 ",," $5,000,000.00 ",," $12,462,666.67 "
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,Diesel Cost per GJ,,Total System Efficiency ,,,$ per kw of capacity,,,Fuel Costs,,Maintenance Costs Over 10 Years,,Total System Costs,,Final Costs
+,,,, $28.00 ,,40%,,, $700.00 ,,," $11,046,000.00 ",," $268,000.00 ",," $350,000.00 ",," $11,664,000.00 "
+,,,,,,,,,,,,,,,,,,
+,,Business as Usual Future,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $40.00 ,,50%,,," $7,000.00 ",,," $12,624,000.00 ",," $635,000.00 ",," $3,500,000.00 ",," $16,759,000.00 "
+,,,,,,,,,,,,,,,,,,
+,,,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $29.00 ,,45%,,," $10,000.00 ",,," $10,169,333.33 ",," $800,000.00 ",," $5,000,000.00 ",," $15,969,333.33 "
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,,
+,,,,Diesel Cost per GJ,,Total System Efficiency ,,,$ per kw of capacity,,,Fuel Costs,,Maintenance Costs Over 10 Years,,Total System Costs,,Final Costs
+,,,, $43.00 ,,40%,,, $700.00 ,,," $16,963,500.00 ",," $268,000.00 ",," $350,000.00 ",," $17,581,500.00 "
+,,,,,,,,,,,,,,,,,,
+,,High Carbon Tax,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $40.00 ,,50%,,," $7,000.00 ",,," $12,624,000.00 ",," $635,000.00 ",," $3,500,000.00 ",," $16,759,000.00 "
+,,,,,,,,,,,,,,,,,,
+,,,,Methanol Cost per GJ,,Total System Efficiency,,,,,,,,,,,,
+,,,, $29.00 ,,45%,,," $10,000.00 ",,," $10,169,333.33 ",," $800,000.00 ",," $5,000,000.00 ",," $15,969,333.33 "
