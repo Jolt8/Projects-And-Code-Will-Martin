@@ -35,16 +35,18 @@ Keq_ref_WGS= 36
 ΔH_WGS = ustrip(uconvert(u"(bar*m^3)/mol", -41.1u"kJ/mol"))
 ref_T_WGS = 298
 
-#@parameters cross_sect_area ρ_bulk Dp epsilon mu_gas MW_CH3OH MW_H2O MW_CO MW_H2 MW_CO2 kf_A_SMR Ea_f_SMR kr_A_SMR Ea_r_SMR Keq_ref_SMR kf_A_WGS Ea_f_WGS kr_A_WGS Ea_r_WGS Keq_ref_WGS
-@independent_variables t z x
-@variables F_CH3OH(..) F_H2O(..) F_CO(..) F_H2(..) F_CO2(..) T(..) P(..) T_j(..)
 
+#START of Shared Variables
+@independent_variables t
 Dt = Differential(t)
-Dz = Differential(z)
+#END of Shared Variables
 
-#heat pipe differentials
-Dx = Differential(x)
-Dxx = Differential(x)^2
+#START of PBR system
+#@parameters cross_sect_area ρ_bulk Dp epsilon mu_gas MW_CH3OH MW_H2O MW_CO MW_H2 MW_CO2 kf_A_SMR Ea_f_SMR kr_A_SMR Ea_r_SMR Keq_ref_SMR kf_A_WGS Ea_f_WGS kr_A_WGS Ea_r_WGS Keq_ref_WGS
+@independent_variables z 
+@variables F_CH3OH(..) F_H2O(..) F_CO(..) F_H2(..) F_CO2(..) T(..) P(..)
+
+Dz = Differential(z)
 
 F_total = F_CH3OH(t, z) + F_H2O(t, z) + F_CO(t, z) + F_H2(t, z) + F_CO2(t, z)
 
@@ -97,12 +99,26 @@ ergun_expression = - (G / rho_gas) * (ergun_term_1 + ergun_term_2)
 eq_P = Dz(P(t, z)) ~ 0.0
 #ergun_expression
 
-eq_T = Dt(T(t, z)) ~ (T_j(t, x) - T(t, z)) #this does work by the way but I'm using Dt(T(t, z)) = 0 for simplicity
+@variables T_j(..) 
+@independent_variables x #These two are necessary
+eq_T = Dt(T(t, z)) ~ (T_j(t, x) - T(t, z)) #this does work by the way but I'm using Dt(T(t, z)) ~ 0 for simplicity
 #eq_T = Dt(T(t, z)) ~ 0.0
 
+#LOOK HERE: since T_j influences the temperature of the reactor, T_j cannot be defined later, this is a pretty big limitation
+#
+
+#PBR eqs
+eqs1 = [eq_F_CH3OH, eq_F_H2O, eq_F_CO, eq_F_H2, eq_F_CO2, eq_P, eq_T]
+#END of PBR system
 
 
-#Start of Heat pipe system
+#START of Heat pipe system
+
+#@variables T_j(..) #This should be possible but look above since T_j is defined up there because the reactor references T_j
+
+Dx = Differential(x)
+Dxx = Differential(x)^2
+
 Cp = ustrip(uconvert(u"J/(g*K)", 0.385u"J/(g*K)"))
 P_heat_pipe = ustrip(uconvert(u"Pa", 1u"bar"))
 
@@ -111,15 +127,45 @@ k = ustrip(uconvert(u"W/(m*K)", 401u"W/(m*K)"))
 rho = ustrip(uconvert(u"g/m^3", 8960u"kg/m^3"))
 #P / (461.5 * T_j(t, x))
 heat_input = 10000.0
+
 T_eq = rho * Cp * Dt(T_j(t, x)) ~ k * Dxx(T_j(t, x)) + heat_input
-#end of heat pipe system
-
-
-
-eqs1 = [eq_F_CH3OH, eq_F_H2O, eq_F_CO, eq_F_H2, eq_F_CO2, eq_P, eq_T]
 
 eqs2 = [T_eq]
+#END of heat pipe system
 
+
+"""Observations regarding the structure of each PDE system
+    - Shared Variables
+        - t is a big one obviously 
+    - Main components of seperate systems
+        - A new independent variable 
+            - This is to allow seperate systems to be further ahead in the x direction
+            - Right now, we use x and z, but we should use x_1, x_2, etc in the future
+        - New Differentials 
+        - A collection of variables like T_j(..)
+        - Input/Fixed parameters 
+        - Equations describing how something like T_j(..) changes along its respective x var and t 
+        - We should probably have the Boundary conditions of a system defined after you define a system (even the ones that will eventually become interface boundaries)
+    - A Shared method for joining these systems together and solving them
+        - Combining the equations from all systems
+        - Defining the start and end time
+        - Defining the start and end of each system's dependent variable 
+        - Domains
+        - VERY IMPORTANT: Boundary conditions
+            - This is probably going to be the hardest to get right 
+            - Start vs End vs Interface boundaries 
+            - We should probably have the Boundary conditions of a system defined after you define a system (even the ones that will eventually become interface boundaries)
+            - Then at the end, you define the interface boundaries
+            - Setting up named PDE system
+            - Setting up the amount of z and x points to be discretized into 
+            - A function for debugging (should probably create a macro like @monitor *some symbolic variable*) 
+            - discretization
+            - solving
+"""
+
+
+
+#merging them together
 eqs = vcat(eqs1, eqs2)
 
 t_start = 0
@@ -154,7 +200,7 @@ bcs = [
     T_j(t_start, x) ~ 300,
     T_j(t, x_min) ~ T(t, x_max), #this actually works!
     #currently T_j(t, x_min) ~ T(t, 0.5) doesn't work - this needs to be resolved
-        # The only way I could see of sovling this is to hack it in such a way that the reactor is split in two the boundary conditions are connected again and then we pull from that interface
+        # The only way I could see of solving this is to hack it in such a way that the reactor is split in two the boundary conditions are connected again and then we pull from that interface
 ]
 
 @named pdesystem = PDESystem(eqs, bcs, domains, [t, x, z], [F_CH3OH(t, z), F_H2O(t, z), F_CO(t, z), F_H2(t, z), F_CO2(t, z), T(t, z), P(t, z), T_j(t, x)])
@@ -170,30 +216,52 @@ num_z_points = z_points - 1
 T_offset = 5 * num_z_points
 T_at_z_max_index = T_offset + num_z_points
 
+global start_time = time()
+
+global last_print_time = time() 
+global writes_per_second = 0.1
+
 function print_debug_info(integrator)
-    # Get the current temperature at the reactor outlet
-    T_outlet = 573
+    if time() - last_print_time >= writes_per_second
+        # Get the current temperature at the reactor outlet
+        T_outlet = 573
 
-    kf_SMR_cur = kf_A_SMR * exp(-Ea_f_SMR / (R * T_outlet))
-    Keq_SMR_cur = Keq_ref_SMR * exp((-ΔH_SMR / R) * (1/T_outlet - 1/ref_T_SMR))
-    kr_SMR_cur = kf_SMR_cur / Keq_SMR_cur
+        kf_SMR_cur = kf_A_SMR * exp(-Ea_f_SMR / (R * T_outlet))
+        Keq_SMR_cur = Keq_ref_SMR * exp((-ΔH_SMR / R) * (1/T_outlet - 1/ref_T_SMR))
+        kr_SMR_cur = kf_SMR_cur / Keq_SMR_cur
 
-    kf_WGS_cur = kf_A_WGS * exp(-Ea_f_WGS / (R * T_outlet))
-    Keq_WGS_cur = Keq_ref_WGS * exp((-ΔH_WGS / R) * (1/T_outlet - 1/ref_T_WGS))
-    kr_WGS_cur = kf_WGS_cur / Keq_WGS_cur
+        kf_WGS_cur = kf_A_WGS * exp(-Ea_f_WGS / (R * T_outlet))
+        Keq_WGS_cur = Keq_ref_WGS * exp((-ΔH_WGS / R) * (1/T_outlet - 1/ref_T_WGS))
+        kr_WGS_cur = kf_WGS_cur / Keq_WGS_cur
 
-    println("Time: ", (integrator.t), ", T_outlet: ", (round(T_outlet, digits=2)), ", kf_SMR: ", kf_SMR_cur, ", Keq_SMR: ", Keq_SMR_cur, ", kr_SMR: ", kr_SMR_cur, ", kf_WGS: ", kf_WGS_cur, ", Keq_WGS: ", Keq_WGS_cur, ", kr_WGS: ", kr_WGS_cur)
+        t = integrator.t
+
+        elapsed_time = time() - start_time
+        elapsed_time = round(elapsed_time, digits = 2)
+
+        T_outlet = round(T_outlet, digits = 2)
+
+        output_string = "Sim Time: $t, elapsed_time: $elapsed_time, T_outlet: $T_outlet, kf_SMR: $kf_SMR_cur, Keq_SMR: $Keq_SMR_cur, kr_SMR: $kr_SMR_cur, kf_WGS: $kf_WGS_cur, Keq_WGS: $Keq_WGS_cur, kr_WGS: $kr_WGS_cur"
+        write(file, output_string * "\n")
+        flush(file)
+        println(output_string)
+        global last_print_time = time()
+    end
 end
 
 # Create the callback
 # The condition `(u, t, integrator) -> true` means it will run at every step
+
+file = open("C://Users//wille//Desktop//Legacy-Projects-And-Code-Will-Martin//Julia Projects//pbr_heat_pipe_output.txt", "w")
 debug_callback = DiscreteCallback((u, t, integrator) -> true, print_debug_info)
+#debug_callback = DiscreteCallback((u, t, integrator) -> (time() - last_log_time >= 1.0), print_debug_info)
 
 sol = solve(prob, Rosenbrock23(), callback = debug_callback)
 
-z_grid = sol[z]
+
 t_grid = sol[t]
 z_grid = sol[z]
+x_grid = sol[x]
 
 
 desired_max_time = 200000
@@ -211,7 +279,7 @@ sol[T_j(t, x)][1:max_time_idx, 2]
 
 plot(t_grid[1:max_time_idx], sol[F_CH3OH(t, z)][1:max_time_idx, 2], xlabel="time (s)", ylabel="Molar Flow (mol/s)", label="CH3OH", lw=2)
 sol[F_CH3OH(t, z)][:, 2]
-FESplot!(t_grid[1:max_time_idx], sol[F_H2(t, z)][1:max_time_idx, 2], xlabel="time (s)", ylabel="Molar Flow (mol/s)", label="H2", lw=2)
+plot!(t_grid[1:max_time_idx], sol[F_H2(t, z)][1:max_time_idx, 2], xlabel="time (s)", ylabel="Molar Flow (mol/s)", label="H2", lw=2)
 sol[F_H2O(t, z)][:, 2]
 plot!(t_grid[1:max_time_idx], sol[F_H2O(t, z)][1:max_time_idx, 2], xlabel="time (s)", ylabel="Molar Flow (mol/s)", label="H2O", lw=2)
 sol[F_H2(t, z)][:, 2]
