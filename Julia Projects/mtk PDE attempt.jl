@@ -62,13 +62,20 @@ end
 end
 
 # Now, build the 1D PDE system (the rod) by connecting them!
-n = 3
-
+n = 10
+"""
 # Instantiate all the components
 @named left_boundary = SomeHeatSource(Q_flow_fixed = 5.0)
 @named right_boundary = SomeFixedTemperature(T_fixed = 293.15)
-nodes = [HeatCapacitor(name=Symbol("node", i), C=1/n) for i in 1:n]
-conductors = [ThermalConductor(name=Symbol("cond", i), G=n) for i in 1:(n-1)]
+nodes = []
+for i in 1:n
+    node = push!(nodes, HeatCapacitor(name=Symbol("node", i), C=1/n))
+end
+
+conductors = []
+for i in 1:n-1
+    push!(conductors, ThermalConductor(name=Symbol("cond", i), G=n))
+end
 
 # 2. Create connections programmatically
 connections = Equation[]
@@ -84,38 +91,33 @@ push!(connections, connect(right_boundary.port, nodes[n].port))
 # 3. Create the ODESystem
 all_systems = vcat(nodes, conductors, left_boundary, right_boundary)
 @named rod = ODESystem(connections, t, systems=all_systems)
-
-#We should probably get the function
 """
+#We should probably get the function below to work to ensure that PDE modeling is actually viable
 @mtkmodel HeatRod begin
     @components begin
-        # Create n capacitors (the nodes)
-        nodes = [HeatCapacitor(C=1/n) for i in 1:n]
-        # Create n-1 conductors (the connections)
-        conductors = [Element1D() for i in 1:(n-1)]
+        nodes = [HeatCapacitor(name=Symbol("node", i), C=1/n) for i in 1:n]
+        conductors = [ThermalConductor(name=Symbol("cond", i), G=n) for i in 1:(n-1)]
 
         # Add boundary condition components
-        left_boundary = SomeHeatSource()
-        right_boundary = SomeFixedTemperature(T_fixed=293.15) # 20 °C
+        left_boundary = SomeHeatSource(name=Symbol("left bound"))
+        right_boundary = SomeFixedTemperature(T_fixed=293.15, name=Symbol("right bound")) # 20 °C
     end
     
     @equations begin
-        # This loop IS the discretization of the PDE
-        for i in 1:(n-1)
-            connect(nodes[i].port, conductors[i].port_a)
-            connect(conductors[i].port_b, nodes[i+1].port)
-        end
+        #This loop doesn't work because it says that it cannot convert the loop that's type nothing into an equation
+        #Nevermind, you just have to do this instead of a for i in 1:(n-1) ... end 
+        [connect(nodes[i].port, conductors[i].port_a) for i in 1:(n-1)]
+        [connect(conductors[i].port_b, nodes[i+1].port) for i in 1:(n-1)]
         
         # Connect the ends of the rod to the boundary conditions
         connect(left_boundary.port, nodes[1].port)
         connect(right_boundary.port, nodes[n].port)
     end
 end
-"""
+
 # --- Simulation Setup ---
 
-# Instantiate the model
-#@named rod = HeatRod()
+@named rod = HeatRod()
 
 # Create a system and simplify the equations
 sys = structural_simplify(rod)
@@ -135,8 +137,9 @@ sol = solve(prob)
 #temp_vars = [rod.nodes[i].T for i in 1:10]
 
 # Plot the solution
+vars = unknowns(rod)[1:4:(4*n)]
 plot(sol,
-     vars=[node.T for node in nodes],
+     vars=vars,
      title="Temperature Distribution in Heat Rod",
      xlabel="Time (s)",
      ylabel="Temperature (K)",

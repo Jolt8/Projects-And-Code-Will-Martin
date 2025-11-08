@@ -206,7 +206,7 @@ bcs = [
 
     #below is for heat pipe BCS
     T_j(t_start, x) ~ 573.0,
-    T_j(t, 0.5) ~ T(t, z_max), #this actually works!
+    T_j(t, x_max) ~ T(t, z_max), #this actually works!
     #currently T_j(t, x_min) ~ T(t, 0.5) doesn't work - this needs to be resolved
         # The only way I could see of solving this is to hack it in such a way that the reactor is split in two the boundary conditions are connected again and then we pull from that interface
 ]
