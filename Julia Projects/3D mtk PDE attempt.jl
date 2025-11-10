@@ -90,29 +90,35 @@ end
     end
 end
 
-rows = 4
-cols = 5
-n_nodes = rows * cols
+rows = 3
+cols = 3
+layers = 3
+n_nodes = rows * cols * layers
 
-nodes = [HeatCapacitor(name=Symbol("node_", i, "_", j), C=1/n_nodes) for i in 1:rows, j in 1:cols]
+nodes = [HeatCapacitor(name=Symbol("node_", i, "_", j, "_", k), C=1/n_nodes) for i in 1:rows, j in 1:cols, k in 1:layers]
 
-h_conds = [ThermalConductor(name=Symbol("h_cond_", i, "_", j)) for i in 1:rows, j in 1:(cols-1)]
-v_conds = [ThermalConductor(name=Symbol("v_cond_", i, "_", j)) for i in 1:(rows-1), j in 1:cols]
+v_conds = [ThermalConductor(name=Symbol("v_cond_", i, "_", j, "_", k)) for i in 1:(rows-1), j in 1:cols, k in 1:layers]
+h_conds = [ThermalConductor(name=Symbol("h_cond_", i, "_", j, "_", k)) for i in 1:rows, j in 1:(cols-1), k in 1:layers]
+d_conds = [ThermalConductor(name=Symbol("d_cond_", i, "_", j, "_", k)) for i in 1:rows, j in 1:cols, k in 1:(layers-1)]
+#d for depth I guess
 
 # Add boundary condition components
-left_bcs = [SomeHeatSource(name=Symbol("heat_source_", i)) for i in 1:rows]
-right_bcs = [SomeFixedTemperature(T_fixed=293.15, name=Symbol("fixed_temp_", i)) for i in 1:rows]
+left_bcs = [SomeHeatSource(name=Symbol("heat_source_", i, "_", k)) for i in 1:rows, k in 1:layers]
+right_bcs = [SomeFixedTemperature(T_fixed=293.15, name=Symbol("fixed_temp_", i, "_", k)) for i in 1:rows, k in 1:layers]
 
 connections = Equation[]
 
-[push!(connections, connect(nodes[i, j].port, h_conds[i, j].port_a)) for i in 1:rows, j in 1:(cols-1)]
-[push!(connections, connect(h_conds[i, j].port_b, nodes[i, j+1].port)) for i in 1:rows, j in 1:(cols-1)]
+[push!(connections, connect(nodes[i, j, k].port, v_conds[i, j, k].port_a)) for i in 1:(rows-1), j in 1:cols, k in 1:layers]
+[push!(connections, connect(v_conds[i, j, k].port_b, nodes[i+1, j, k].port)) for i in 1:(rows-1), j in 1:cols, k in 1:layers]
 
-[push!(connections, connect(nodes[i, j].port, v_conds[i, j].port_a)) for i in 1:(rows-1), j in 1:cols]
-[push!(connections, connect(v_conds[i, j].port_b, nodes[i+1, j].port)) for i in 1:(rows-1), j in 1:cols]
+[push!(connections, connect(nodes[i, j, k].port, h_conds[i, j, k].port_a)) for i in 1:rows, j in 1:(cols-1), k in 1:layers]
+[push!(connections, connect(h_conds[i, j, k].port_b, nodes[i, j+1, k].port)) for i in 1:rows, j in 1:(cols-1), k in 1:layers]
 
-[push!(connections, connect(left_bcs[i].port, nodes[i, 1].port)) for i in 1:rows]
-[push!(connections, connect(right_bcs[i].port, nodes[i, cols].port)) for i in 1:rows]
+[push!(connections, connect(nodes[i, j, k].port, d_conds[i, j, k].port_a)) for i in 1:rows, j in 1:cols, k in 1:(layers-1)]
+[push!(connections, connect(d_conds[i, j, k].port_b, nodes[i, j, k+1].port)) for i in 1:rows, j in 1:cols, k in 1:(layers-1)]
+
+[push!(connections, connect(left_bcs[i, k].port, nodes[i, 1, k].port)) for i in 1:rows, k in 1:layers]
+[push!(connections, connect(right_bcs[i, k].port, nodes[i, cols, k].port)) for i in 1:rows, k in 1:layers]
 
 # --- Simulation Setup ---
 eqs_total = System[]
@@ -120,6 +126,7 @@ all_systems = vcat(
     vec(nodes),
     vec(h_conds),
     vec(v_conds),
+    vec(d_conds),
     vec(left_bcs),
     vec(right_bcs)
 )
@@ -134,7 +141,7 @@ tspan = (0.0, 10.0)
 prob = ODEProblem(sys, [], tspan)
 
 sol = solve(prob)
-
+"""
 initial_temps = sol.u[1]
 final_temps = sol.u[end]
 T_min = minimum(initial_temps)
@@ -171,3 +178,4 @@ plot(sol,
      legend=:topleft,
      #labels=["Node " .* string.(1:10) for i in 1:10]'
     )
+"""
