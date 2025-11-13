@@ -14,7 +14,7 @@ import ModelingToolkit: t_nounits as t, D_nounits as D
     end
 
     @parameters begin
-        F_guess[1:n_species]
+        F_guess[1:n_species], [connect = Flow]
         T_guess = 273.13, [description = "temperature in K"]
         p_guess = 101325, [description = "pressure in Pa"]
     end
@@ -34,10 +34,10 @@ end
     end
     
     @variables begin
-        F(t)[1:n_species]#, [description="test"] #description breaks this for some reason
-        T(t)
-        p(t)
-        rate(t)
+        F(t)[1:n_species], [connect = inputs]#, [description="test"] #description breaks this for some reason
+        T(t), [connect = inputs]
+        p(t), [connect = inputs]
+        rate(t), [connect = outputs]
         #forward_term(t)
         #reverse_term(t)
     end
@@ -124,8 +124,6 @@ end
     end
     
     @components begin
-        inlet = ReactorPort(n_species=n_species, n_reactants=n_reactants, n_products=n_products)
-        outlet = ReactorPort(n_species=n_species, n_reactants=n_reactants, n_products=n_products)
         kinetics = ReactionKinetics(
             n_species=n_species, 
             n_reactants=n_reactants, 
@@ -141,9 +139,13 @@ end
 
 
     @variables begin
-        F(t)[1:n_species]
+        F(t)[1:n_species] = [1.0 for i in 1:n_species]
         T(t) = 293.13
         p(t) = 101325
+
+        F_in(t)[1:n_species] = [1.0 for i in 1:n_species]
+        T_in(t) = 293.13
+        p_in(t) = 101325.0
     end
 
     @equations begin
@@ -152,17 +154,12 @@ end
         kinetics.p ~ p
         #pressure_drop.p ~ p
 
-        D(F) ~ [kinetics.rate * stoich_coeff for stoich_coeff in stoich_coeffs] #don't use dot here: [kinetics.rate .* stoich_coeffs]
+        D(F) ~ [F_in[i] - F[i] + kinetics.rate * catalyst_weight * stoich_coeffs[i] for i in 1:n_species] #don't use dot here: [kinetics.rate .* stoich_coeffs]
 
-        D(T) ~ (kinetics.rate * -heat_of_reaction) / sum(F .* heat_capacity_vec)
-
-        inlet.F ~ F
-        inlet.T ~ T
-        inlet.p ~ p
-        
-        outlet.F ~ F
-        outlet.T ~ T
-        outlet.p ~ p
+        D(T) ~ ((sum(F_in .* heat_capacity_vec) * T_in - sum(F .* heat_capacity_vec) * T) + 
+                kinetics.rate * catalyst_weight * (-heat_of_reaction)) / 
+                sum(F .* heat_capacity_vec)
+        #(kinetics.rate * -heat_of_reaction) / sum(F .* heat_capacity_vec) #wait what, why does dot work here?
     end
 end
 
@@ -179,7 +176,7 @@ end
     end
 
     @parameters begin
-        F_fixed[1:n_species], [description = "molar flows in mol/s for each respective species"]
+        F_fixed[1:n_species], [connect = Flow]
         T_fixed = 273.13, [description = "temperature in K"]
         p_fixed = 101325, [description = "pressure in Pa"]
     end
@@ -201,7 +198,7 @@ n_species_val = length(stoich_coeffs_val)
 n_reactants_val = 1
 n_products_val = 2
 
-rows = 4
+rows = 1
 n_nodes = rows
 
 heat_capacity_vec_val = [20, 20, 20, 20, 20]
@@ -236,6 +233,7 @@ segments = [ReactorSegment(name=Symbol("seg", i),
     products_stoichs=products_stoichs_val,
     kf_A=1.0e5, kf_Ea=8.0e4, kr_A=1.0e12, kr_Ea=1.5e5) for i in 1:rows
 ]
+println(defaults(segments[1]))
 
 #NOTE: in the future, if you want to change a value like kf_A halfway through the reactor just change kinetics directly like: seg.kinetics.kf_A
 
@@ -249,17 +247,27 @@ segments = [ReactorSegment(name=Symbol("seg", i),
 @named right_bcs = SpeciesSource(n_species=n_species_val, n_reactants=n_reactants_val, n_products=n_products_val, F_fixed=[1.0, 1.0, 0.01, 0.01, 0.01], T_fixed=500.0, p_fixed=5e5)
 
 connections = Equation[]
+# Left boundary condition
+push!(connections, segments[1].F_in ~ left_bcs.port.F)
+push!(connections, segments[1].T_in ~ left_bcs.port.T)
+push!(connections, segments[1].p_in ~ left_bcs.port.p)
 
-push!(connections, connect(left_bcs.port, segments[1].inlet))
-[push!(connections, connect(segments[i].outlet, segments[i+1].inlet)) for i in 1:(rows-1)]
-push!(connections, connect(segments[end].outlet, right_bcs.port))
-
+# Inter-segment connections (outlet of i feeds inlet of i+1)
+for i in 1:(rows-1)
+    push!(connections, segments[i+1].F_in ~ segments[i].F)
+    push!(connections, segments[i+1].T_in ~ segments[i].T)
+    push!(connections, segments[i+1].p_in ~ segments[i].p)
+end
+"""
+# Right boundary (just observation, could be removed)
+push!(connections, right_bcs.port.F ~ segments[end].F)
+push!(connections, right_bcs.port.T ~ segments[end].T)
+push!(connections, right_bcs.port.p ~ segments[end].p)"""
 # --- Simulation Setup ---
 eqs_total = System[]
 all_systems = vcat(
     segments,
-    left_bcs,
-    right_bcs
+    left_bcs
 )
 all_systems
 
