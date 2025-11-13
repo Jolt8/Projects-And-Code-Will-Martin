@@ -1,5 +1,3 @@
-using Revise
-
 using Unitful, DifferentialEquations
 using Clapeyron
 using Plots
@@ -489,9 +487,9 @@ reactor_inlet_temperature = 350.13u"°C" |> u"K"
 
 reactor_inlet_pressure = 1.0u"bar"
 
-SMR_methanol_molar_flow = 0.06520168451976938u"mol/s"
-
 SMR_model = PR(["Methanol", "water", "carbon monoxide", "hydrogen", "Carbon Dioxide"])
+
+SMR_methanol_molar_flow = 0.06520168451976938u"mol/s"
 
 z = [1.0, 1.3, 0.001, 0.001, 0.001]
 #z = [1, 1.3, 0.1, 0.1, 0.001]
