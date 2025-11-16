@@ -1,3 +1,5 @@
+# Me from the future: HOLY SHIT THIS SUCKS! 
+
 from CoolProp.CoolProp import PropsSI
 #from CoolProp.CoolProp import IProps, get_Fluid_index
 #from CoolProp.CoolProp import PhaseSI

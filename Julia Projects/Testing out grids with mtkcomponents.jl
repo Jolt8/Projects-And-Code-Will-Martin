@@ -129,12 +129,8 @@ nodes = [HeatCapacitor(name=Symbol("node_", i), C=1/n_nodes) for i in 1:n_nodes]
 
 conds = [ThermalConductor(name=Symbol("h_cond_", i)) for i in 1:length(unique_connections)]
 
-# Add boundary condition components
-#these are going to be tricky to deal with when doing custom meshes, I don't know if there's a way to grap bcs data from the generated grid before it 
-#would be used for the Ferrite solver
-#look into getfacetset(grid, "some_boundary_condition_name")
-#or getvertexset(grid, "some_boundary_condition_name")
-#or getvnodeset(grid, "some_boundary_condition_name")
+#Add boundary condition components
+#thought this would be hard but getnodeset(grid, "some_boundary_condition_name") does exactly what I need
 n_left_bcs = length(collect(getnodeset(grid, "left")))
 left_bcs = [SomeHeatSource(name=Symbol("heat_source_", i)) for i in 1:n_left_bcs] 
 n_right_bcs = length(collect(getnodeset(grid, "right")))
@@ -142,21 +138,19 @@ right_bcs = [SomeFixedTemperature(T_fixed=293.15, name=Symbol("fixed_temp_", i))
 
 connections = Equation[]
 
-i = 1
-for (i_in, i_out) in unique_connections
+for (i, (i_in, i_out)) in enumerate(unique_connections)
     push!(connections, connect(nodes[i_in].port, conds[i].port_a))
     push!(connections, connect(conds[i].port_b, nodes[i_out].port))
-    i += 1
 end
 
-left_bcs_on_grid = collect(getnodeset(grid, "left"))
-for i in eachindex(left_bcs_on_grid)
-    push!(connections, connect(left_bcs[i].port, nodes[left_bcs_on_grid[i]].port))
+left_node_indicies = collect(getnodeset(grid, "left"))
+for (i, node_idx) in enumerate(left_node_indicies)
+    push!(connections, connect(left_bcs[i].port, nodes[node_idx].port))
 end
 
-right_bcs_on_grid = collect(getnodeset(grid, "right"))
-for i in eachindex(right_bcs_on_grid)
-    push!(connections, connect(right_bcs[i].port, nodes[right_bcs_on_grid[i]].port))
+right_node_indicies = collect(getnodeset(grid, "right"))
+for (i, node_idx) in enumerate(right_node_indicies)
+    push!(connections, connect(right_bcs[i].port, nodes[node_idx].port))
 end
 
 # START OF SIM SETUP

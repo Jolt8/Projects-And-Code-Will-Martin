@@ -25,6 +25,6 @@ Outputs from a run
 - catalyst surface area 
 
 
-#Options for physics: Modia.jl (75 stars), RigidBodySim.jl (74 stars), Meshes.jl (436), and writing my own solver
+#Options for physics: Modia.jl (75 stars), RigidBodySim.jl (74 stars), Meshes.jl (436 stars), and writing my own solver (hard)
 
 """
