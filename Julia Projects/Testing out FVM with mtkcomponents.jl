@@ -1,7 +1,7 @@
 using ModelingToolkit
 using DifferentialEquations
-using Plots
-using GLMakie
+#using Plots
+#using GLMakie
 
 import ModelingToolkit: t_nounits as t, D_nounits as D
 
@@ -101,11 +101,13 @@ end
 left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
 right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
 
-grid = generate_grid(Hexahedron, (4, 1, 4), left, right)
+grid = generate_grid(Hexahedron, (3, 3, 3), left, right)
 
-addcellset!(grid, "left", x -> x[1] <= 0.25)
+length_to_node_ratio = 1 / 3
+
+addcellset!(grid, "left", x -> x[1] <= 0 + length_to_node_ratio)
 getcellset(grid, "left")
-addcellset!(grid, "right", (x) -> x[1] >= 0.75)
+addcellset!(grid, "right", (x) -> x[1] >= 0.99999999 - (length_to_node_ratio)) #1 doesn't work
 getcellset(grid, "right")
 
 struct CellGeometry
@@ -188,22 +190,6 @@ facet_qr = FacetQuadratureRule{RefHexahedron}(2)
 
 cell_geometries = FVM_cell_geometries(grid, poly_interp, cell_qr, facet_qr)
 
-function FVM_unique_connections(grid)
-    top = ExclusiveTopology(grid)
-    unique_connections = Set() #Set{Tuple{Tuple{Number, Number}, Tuple{Number, Number}}}() #don't know if not defning the set type decreases performance
-    for cell in CellIterator(grid)
-        i = cellid(cell) 
-        for j in 1:nfacets(cell)
-            neighbors = top.face_face_neighbor[i, j]
-            if !isempty(neighbors)
-                push!(unique_connections, minmax((i, j), neighbors[1].idx))
-            end
-        end
-    end
-    return unique_connections
-end
-
-unique_connections = FVM_unique_connections(grid)
 #END OF FERRITE SECION
 
 k_thermal = 200
@@ -218,6 +204,7 @@ cells = [HeatCapacitor(name=Symbol("node_", i), C=cell_geometries[i].volume*vol_
 conds = []
 
 for i in 1:length(cell_geometries)
+    push!(conds, [])
     for j in 1:length(cell_geometries[i].unique_connections)
         face_area = cell_geometries[i].face_areas[cell_geometries[i].unique_connections[j][1][2]]
         neighbor_cell_idx = cell_geometries[i].unique_connections[j][2][2]
@@ -226,34 +213,37 @@ for i in 1:length(cell_geometries)
         z_dist = (cell_geometries[i].centroid_coords[3] + cell_geometries[neighbor_cell_idx].centroid_coords[3])
         dist_between_cells = x_dist + y_dist + z_dist #not accurate but good enough for now
         G_calc = k_thermal * face_area / dist_between_cells
-        push!(conds, ThermalConductor(name=Symbol("h_cond_", i, "_", j), G=cell_geometries[i].face_areas[j]), )
+        push!(conds[i], ThermalConductor(name=Symbol("h_cond_", i, "_", j), G=cell_geometries[i].face_areas[j]))
     end
 end
+
+#println(conds)
 
 #conds = [ThermalConductor(name=Symbol("h_cond_")), G=cell.geometries[i] for cell_geom in cell_geometries for j in 1:length(cell_geom.unique_connections)] # need a way to multiply U by the area between the cells
 
 #Add boundary condition components
 #thought this would be hard but getnodeset(grid, "some_boundary_condition_name") does exactly what I need
-n_left_bcs = length(collect(getcellset(grid, "left")))
+left_node_indicies = collect(getcellset(grid, "left"))
+n_left_bcs = length(left_node_indicies)
 left_bcs = [SomeHeatSource(name=Symbol("heat_source_", i), Q_flow_fixed=5000) for i in 1:n_left_bcs] 
-n_right_bcs = length(collect(getcellset(grid, "right")))
+right_node_indicies = collect(getcellset(grid, "right"))
+n_right_bcs = length(right_node_indicies)
 right_bcs = [SomeFixedTemperature(name=Symbol("fixed_temp_", i), T_fixed=293.15) for i in 1:n_right_bcs]
 
 connections = Equation[]
+#cell_geometries[1].unique_connections
 
 for i in 1:length(cell_geometries)
-    for j in 1:length(cell_geometries)
-        push!(connections, connect(cells[cell_idx].port, conds[facet_idx].port_a))
-        push!(connections, connect(conds[facet_idx].port_b, cells[neighbor_idx].port))
+    for j in 1:length(cell_geometries[i].unique_connections)
+        push!(connections, connect(cells[i].port, conds[i][j].port_a))
+        push!(connections, connect(conds[i][j].port_b, cells[cell_geometries[i].unique_connections[j][2][1]].port))
     end
 end
 
-left_node_indicies = collect(getnodeset(grid, "left"))
 for (i, node_idx) in enumerate(left_node_indicies)
     push!(connections, connect(left_bcs[i].port, nodes[node_idx].port))
 end
 
-right_node_indicies = collect(getnodeset(grid, "right"))
 for (i, node_idx) in enumerate(right_node_indicies)
     push!(connections, connect(right_bcs[i].port, nodes[node_idx].port))
 end
@@ -266,7 +256,6 @@ all_systems = vcat(
     vec(left_bcs),
     vec(right_bcs)
 )
-all_systems
 
 @named rod = ODESystem(connections, t, systems=all_systems)
 
