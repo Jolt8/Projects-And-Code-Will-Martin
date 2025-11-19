@@ -1,62 +1,11 @@
 using Ferrite
 using SparseArrays
-#START of generating grid
-left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
-right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
 
-grid = generate_grid(Hexahedron, (2, 2, 2), left, right)
-#END of generating grid
-
-#START of main components for face area and cell volume
-ip = Lagrange{RefHexahedron, 1}() #no idea what the 1 represents here
-
-cell_qr = QuadratureRule{RefHexahedron}(2)
-cell_values = CellValues(cell_qr, ip)
-
-facet_qr = FacetQuadratureRule{RefHexahedron}(2) #no idea what the 2 represents here
-facet_values = FacetValues(facet_qr, ip)
-
-#cell_coords = getcoordinates(grid, 1) #this returns a cube with 1.0 long sides 
-
-cell_dimensions = []
-
-"""
-for cell in CellIterator(grid)
-    #Get cell volume
-    reinit!(cell_values, cell)
-    vol_i = 0.0 
-    for qp in 1:getnquadpoints(cell_values)
-        d_vol = getdetJdV(cell_values, qp) 
-        vol_i += d_vol
-    end
-    
-    #Get face areas
-    area = []
-    cell_coords = getcoordinates(cell)
-    
-    for facet_index in 1:nfacets(cell)  
-        reinit!(facet_values, cell_coords, facet_index)
-        
-        area_i = 0.0
-        for qp in 1:getnquadpoints(facet_values)
-            area_i += getdetJdV(facet_values, qp)
-        end
-        
-        push!(area, area_i)
-    end
-
-    #Get centroid
-    x_avg = sum([c[1] for c in cell_coords]) / length(cell_coords)
-    y_avg = sum([c[2] for c in cell_coords]) / length(cell_coords)
-    z_avg = sum([c[3] for c in cell_coords]) / length(cell_coords)
-
-    centroid_coords = [x_avg, y_avg, z_avg]
-
-    push!(cell_dimensions, [vol_i, [area], centroid_coords]) #formatting it this way because it's kindof 3D, 2D, 1D although a different format might be better
-
+struct CellGeometry
+    volume::Float64
+    face_areas::Vector{Float64}
+    centroid_coords::Vector{Float64}
 end
-cell_dimensions
-"""
 
 function FVM_grid_dimensions(grid, poly_interp, cell_quadrature_rule, facet_quadrature_rule)
     cell_qr = cell_quadrature_rule
@@ -64,15 +13,15 @@ function FVM_grid_dimensions(grid, poly_interp, cell_quadrature_rule, facet_quad
     facet_qr = facet_quadrature_rule
     facet_values = FacetValues(facet_qr, poly_interp)
 
-    cell_dimensions = []
+    cell_geometries = []
 
     for cell in CellIterator(grid)
         #Get cell volume
-        reinit!(cell_values, cell)
-        vol_i = 0.0 
+        Ferrite.reinit!(cell_values, cell)
+        vol = 0.0 
         for qp in 1:getnquadpoints(cell_values)
             d_vol = getdetJdV(cell_values, qp) 
-            vol_i += d_vol
+            vol += d_vol
         end
         
         #Get face areas
@@ -80,7 +29,7 @@ function FVM_grid_dimensions(grid, poly_interp, cell_quadrature_rule, facet_quad
         cell_coords = getcoordinates(cell)
         
         for facet_index in 1:nfacets(cell)
-            reinit!(facet_values, cell_coords, facet_index)
+            Ferrite.reinit!(facet_values, cell_coords, facet_index)
             
             area_i = 0.0
             for qp in 1:getnquadpoints(facet_values)
@@ -97,22 +46,33 @@ function FVM_grid_dimensions(grid, poly_interp, cell_quadrature_rule, facet_quad
 
         centroid_coords = [x_avg, y_avg, z_avg]
 
-        push!(cell_dimensions, [vol_i, [areas], centroid_coords]) #formatting it this way because it's kindof 3D, 2D, 1D although a different format might be better
+        push!(cell_geometries, CellGeometry(vol_i, areas, centroid_coords)) #formatting it this way because it's kindof 3D, 2D, 1D although a different format might be better
     end
-    return cell_dimensions
+    return cell_geometries
 end
 
-poly_interp = Lagrange{RefHexahedron, 1}() #1 = linear elements 2 = quadratic/curved edges
+#START of generating grid
+left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
+right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
 
-cell_qr = QuadratureRule{RefHexahedron}(2) #2 represents the number of integration points. Basically higher number = higher accuracy but more computation
+grid = generate_grid(Hexahedron, (2, 2, 2), left, right)
+#END of generating grid
 
-facet_qr = FacetQuadratureRule{RefHexahedron}(2) 
+cell_type = getrefshape(eltype(grid.cells))
+#eltype(grid.cells) #RefHexahedron #TODO: this should maybe be integrated into the function itself and just assume linear and 2 for integration points
+
+poly_interp = Lagrange{base_shape, 1}() #1 = linear elements 2 = quadratic/curved edges
+
+cell_qr = QuadratureRule{base_shape}(2) #2 represents the number of integration points. Basically higher number = higher accuracy but more computation
+
+facet_qr = FacetQuadratureRule{base_shape}(2) 
 
 FVM_grid_dimensions(grid, poly_interp, cell_qr, facet_qr)
+
 #END of main components for face area and cell volume
 
+
 #START of FVM neighbor finder
-#cleaned up version
 function FVM_unique_connections(grid)
     top = ExclusiveTopology(grid)
     unique_connections = Set() #Set{Tuple{Tuple{Number, Number}, Tuple{Number, Number}}}() #don't know if not defning the set type decreases performance
@@ -128,38 +88,23 @@ function FVM_unique_connections(grid)
     return unique_connections
 end
 
+left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
+right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
+
+grid = generate_grid(Hexahedron, (2, 2, 1), left, right)
+
 test = FVM_unique_connections(grid)
 
-println(test)#a 2x2x1 Hexahedron gives 4 unique connections so this definitely works #a 2x2x2 gives 12 elements, which is also right!
-
-
-CellIndex(1)
-
-facetskeleton(top, grid)
-
-for cell in CellIterator(grid)
-    cell_idx = CellIndex(cellid(cell))
-    neighborhood = getneighborhood(top, grid, cell_idx, false)
-    println(neighborhood)
-    for i in 1:nfacets(cell)
-        test = getneighborhood(top, grid, FacetIndex((cellid(cell), i)))
-        #println(test)
-    end
-    for facet_idx in facetskeleton(top, grid) #this is formatted FacetIndex(cell_idx, side_number) #ex FacetIndex(1, 5)
-    end
-end
-
+println(test) #a 2x2x1 Hexahedron gives 4 unique connections so this definitely works #a 2x2x2 gives 12 elements, which is also right!
 #END of FVM neighbor finder
-
-
 
 
 #Some structs that may be useful in the future:
 struct VertexConnection
     vertex1_idx::Int
     vertex2_idx::Int
-    coords1::Vec{2, Float64}  #or Vec{3, Float64} for 3D
-    coords2::Vec{2, Float64}
+    coords1::Ferrite.Vec{2, Float64}  #or Vec{3, Float64} for 3D
+    coords2::Ferrite.Vec{2, Float64}
     distance::Float64
     cross_section_area::Float64  #For 2D: element thickness × perpendicular width
 end
@@ -168,7 +113,7 @@ struct FacetConnection
     cell1_idx::Int
     cell2_idx::Int
     facet_area::Float64
-    facet_normal::Vec{2, Float64}  # Points from cell1 to cell2
+    facet_normal::Ferrite.Vec{2, Float64}  # Points from cell1 to cell2
     distance_between_centroids::Float64
 end
 
