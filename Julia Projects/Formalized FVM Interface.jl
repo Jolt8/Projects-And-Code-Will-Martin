@@ -13,7 +13,7 @@ function FVM_cell_geometries(grid, poly_interp, cell_quadrature_rule, facet_quad
     facet_qr = facet_quadrature_rule
     facet_values = FacetValues(facet_qr, poly_interp)
 
-    cell_geometries = []
+    cell_geometries = Vector{CellGeometry}()
 
     for cell in CellIterator(grid)
         #Get cell volume
@@ -40,13 +40,11 @@ function FVM_cell_geometries(grid, poly_interp, cell_quadrature_rule, facet_quad
         end
 
         #Get centroid
-        x_avg = sum([c[1] for c in cell_coords]) / length(cell_coords)
-        y_avg = sum([c[2] for c in cell_coords]) / length(cell_coords)
-        z_avg = sum([c[3] for c in cell_coords]) / length(cell_coords)
+        centroid_vec = sum(cell_coords) / length(cell_coords)
 
-        centroid_coords = [x_avg, y_avg, z_avg]
+        centroid_coords = [centroid_vec[1], centroid_vec[2], centroid_vec[3]]
 
-        push!(cell_geometries, CellGeometry(vol_i, areas, centroid_coords)) #formatting it this way because it's kindof 3D, 2D, 1D although a different format might be better
+        push!(cell_geometries, CellGeometry(vol, areas, centroid_coords)) #formatting it this way because it's kindof 3D, 2D, 1D although a different format might be better
     end
     return cell_geometries
 end
@@ -61,13 +59,13 @@ grid = generate_grid(Hexahedron, (2, 2, 2), left, right)
 cell_type = getrefshape(eltype(grid.cells))
 #eltype(grid.cells) #RefHexahedron #TODO: this should maybe be integrated into the function itself and just assume linear and 2 for integration points
 
-poly_interp = Lagrange{base_shape, 1}() #1 = linear elements 2 = quadratic/curved edges
+poly_interp = Lagrange{cell_type, 1}() #1 = linear elements 2 = quadratic/curved edges
 
-cell_qr = QuadratureRule{base_shape}(2) #2 represents the number of integration points. Basically higher number = higher accuracy but more computation
+cell_qr = QuadratureRule{cell_type}(2) #2 represents the number of integration points. Basically higher number = higher accuracy but more computation
 
-facet_qr = FacetQuadratureRule{base_shape}(2) 
+facet_qr = FacetQuadratureRule{cell_type}(2) 
 
-FVM_grid_dimensions(grid, poly_interp, cell_qr, facet_qr)
+FVM_cell_geometries(grid, poly_interp, cell_qr, facet_qr)
 
 #END of main components for face area and cell volume
 
@@ -75,13 +73,14 @@ FVM_grid_dimensions(grid, poly_interp, cell_qr, facet_qr)
 #START of FVM neighbor finder
 function FVM_unique_connections(grid)
     top = ExclusiveTopology(grid)
-    unique_connections = Set() #Set{Tuple{Tuple{Number, Number}, Tuple{Number, Number}}}() #don't know if not defning the set type decreases performance
+    unique_connections = Set{Vector{Vector{Int}}}() #Set{Tuple{Tuple{Number, Number}, Tuple{Number, Number}}}() 
+    #a tuple would probably be better here
     for cell in CellIterator(grid)
         i = cellid(cell) 
         for j in 1:nfacets(cell)
             neighbors = top.face_face_neighbor[i, j]
             if !isempty(neighbors)
-                push!(unique_connections, minmax((i, j), neighbors[1].idx))
+                push!(unique_connections, collect(minmax([i, j], collect(neighbors[1].idx))))
             end
         end
     end
