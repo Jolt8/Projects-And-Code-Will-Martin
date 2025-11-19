@@ -93,7 +93,7 @@ end
 end
 
 #START OF FERRITE SECTION
-grid = generate_grid(Quadrilateral, (30, 30))
+grid = generate_grid(Quadrilateral, (1, 1))
 
 addnodeset!(grid, "left", (x) -> x[1] ≈ -1)
 #getnodeset(grid, "left")
@@ -175,11 +175,21 @@ all_systems
 
     sol = solve(prob)
 end
+
 #these times are all after the program has compiled 
 #the first time is when its run with a new grid shape/size the second time is after rerunning with the same grid shape/size
 #this is tested on a i7-7700HQ
-#1x1 takes 0.35 seconds at first
-#1x1 takes 0.22 seconds at second
+
+#How much does first time compilation take on a 1x1 grid vs a 10x10 grid
+#if the compilation time (not the total time to run the file) is less on the 1x1 grid, would it be a good idea to initialize it with the simplest grid possible 
+#then run a more complex grid?
+
+#1x1 takes 10.801329 seconds (23.36 M allocations: 1.209 GiB, 3.84% gc time, 98.04% compilation time: <1% of which was recompilation)
+#1x1 takes 0.225861 seconds (806.67 k allocations: 27.395 MiB, 0.01% compilation time: 100% of which was recompilation)
+
+#just as an example 1x2 from cold start takes 64.063055 seconds (112.72 M allocations: 5.789 GiB, 4.54% gc time, 99.43% compilation time: 46% of which was recompilation)
+#1x2 takes 14.131481 seconds (24.14 M allocations: 1.236 GiB, 18.59% gc time, 97.39% compilation time: <1% of which was recompilation)
+#1x2 takes 0.462619 seconds (1.41 M allocations: 50.913 MiB, 0.01% compilation time: 100% of which was recompilation)
 
 #5x5 takes 16.7 seconds at first
 #5x5 takes 1.21 seconds at second
@@ -195,7 +205,33 @@ end
 #20x20 takes 134.05 seconds at first
 #20x20 takes 17.42 seconds at second
 
-#5x5 takes 16.7 seconds at first
-#5x5 takes 1.21 seconds at second
+#30x30 takes 448.80 seconds at first
+#30x30 takes 104.98 seconds at second (149.42 M allocations: 13.025 GiB, 6.27% gc time, 0.00% compilation time: 100% of which was recompilation)
+
+#30x60 takes 1220.276316 seconds (557.49 M allocations: 48.750 GiB, 2.27% gc time, 71.29% compilation time: <1% of which was recompilation)
+#30x60 takes 305.805608 seconds (457.29 M allocations: 44.694 GiB, 3.92% gc time, 0.00% compilation time: 94% of which was recompilation)
+
+
+#I wonder what takes more time a 1x16, 2x8, 4x4 grid
+
+#1x16 takes 19.260376 seconds (28.80 M allocations: 1.448 GiB, 12.91% gc time, 93.78% compilation time: <1% of which was recompilation)
+#1x16 takes 1.363001 seconds (4.30 M allocations: 199.238 MiB, 12.31% gc time, 0.01% compilation time: 100% of which was recompilation)
+
+#2x8 takes 16.647645 seconds (26.93 M allocations: 1.345 GiB, 2.89% gc time, 94.49% compilation time: <1% of which was recompilation)
+#2x8 takes 1.337417 seconds (3.17 M allocations: 124.089 MiB, 0.01% compilation time: 100% of which was recompilation)
+
+#4x4 takes 20.704495 seconds (26.23 M allocations: 1.313 GiB, 3.16% gc time, 95.33% compilation time: <1% of which was recompilation)
+#4x4 takes 1.042183 seconds (2.70 M allocations: 97.871 MiB, 0.01% compilation time: 100% of which was recompilation)
+
+#the good news is that even if a grid that was previously compiled is used again after being replaced it will not have to 
+#recompile and you'll get the 100% recompilation time
+#ex. setting it to (1, 16) running it, changing to (2, 8), running (1, 16) again preserves compilation
+
+#also, usually the time it takes to recompile (not simulation) goes down slightly every time you run it
+
+#also, changing a parameter like C of each heat capacitor does not require another simulation (only recompilation) which is actually REALLY good
+
+#after looking at this in sheets the first time to run seems to be T(n log n) and the second time to run seems like halfway between T(n log n) and T(n^2)
+#Here's the link to the sheet: https://docs.google.com/spreadsheets/d/1nOqnXJgxIux2OHeiS7nu_4JaD5Po5ocJ0T5oBaHbS3A/edit?usp=sharing
 
 
