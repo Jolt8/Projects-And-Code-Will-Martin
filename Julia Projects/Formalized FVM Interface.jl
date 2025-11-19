@@ -44,8 +44,27 @@ function FVM_cell_geometries(grid, poly_interp, cell_quadrature_rule, facet_quad
 
         centroid_coords = [centroid_vec[1], centroid_vec[2], centroid_vec[3]]
 
-        push!(cell_geometries, CellGeometry(vol, areas, centroid_coords)) #formatting it this way because it's kindof 3D, 2D, 1D although a different format might be better
-    end
+        unique_connections = Set{Vector{Vector{Int}}}() #Set{Tuple{Tuple{Number, Number}, Tuple{Number, Number}}}() 
+
+        push!(cell_geometries, CellGeometry(vol, areas, centroid_coords, []))
+
+        for cell in CellIterator(grid)
+            i = cellid(cell) 
+            for j in 1:nfacets(cell)
+                neighbors = top.face_face_neighbor[i, j]
+                if !isempty(neighbors)
+                    push!(unique_connections, collect(minmax([i, j], collect(neighbors[1].idx))))
+                end
+            end
+        end
+
+        unique_connections = collect(unique_connections)
+
+        for i in 1:length(unique_connections) #should probably find a way to connect this with the loop above but I don't know how without a set to get rid of duplicates
+            cell_idx = unique_connections[i][1][1]
+            println(cell_idx)
+            push!(cell_geometries[cell_idx].unique_connections, unique_connections[i])
+        end
     return cell_geometries
 end
 
