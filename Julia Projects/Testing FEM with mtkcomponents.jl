@@ -93,9 +93,10 @@ end
 end
 
 #START OF FERRITE SECTION
-grid = generate_grid(Quadrilateral, (1, 1))
+grid = generate_grid(Quadrilateral, (30, 30))
 
 addnodeset!(grid, "left", (x) -> x[1] ≈ -1)
+#getnodeset(grid, "left")
 addnodeset!(grid, "right", (x) -> x[1] ≈ 1)
 
 #collect(getnodeset(grid, "left"))
@@ -112,13 +113,13 @@ for i in eachindex(vertex_neighbors)
     for j in 2:length(vertex_neighbors[i])
         neighbor_at_i = collect(vertex_neighbors[i][j].idx)[2]
         #println(i, ", ", j, ", ", vertex_neighbors[i][j])
-        println(node_at_i, ", ", neighbor_at_i)
-        println((min(node_at_i, neighbor_at_i), max(node_at_i, neighbor_at_i)))
+        #println(node_at_i, ", ", neighbor_at_i)
+        #println((min(node_at_i, neighbor_at_i), max(node_at_i, neighbor_at_i)))
         push!(unique_connections, (min(node_at_i, neighbor_at_i), max(node_at_i, neighbor_at_i)))
     end
 end
 
-println(unique_connections)
+#println(unique_connections)
 
 unique_connections = collect(unique_connections)
 #END OF FERRITE SECION
@@ -165,12 +166,36 @@ all_systems
 
 @named rod = ODESystem(connections, t, systems=all_systems)
 
-sys = structural_simplify(rod)  
+@time begin 
+    sys = structural_simplify(rod)  
+    
+    tspan = (0.0, 10.0) #changing the tspan does not cause a second run long run time
 
-tspan = (0.0, 10.0)
+    prob = ODEProblem(sys, [], tspan)
 
-prob = ODEProblem(sys, [], tspan)
+    sol = solve(prob)
+end
+#these times are all after the program has compiled 
+#the first time is when its run with a new grid shape/size the second time is after rerunning with the same grid shape/size
+#this is tested on a i7-7700HQ
+#1x1 takes 0.35 seconds at first
+#1x1 takes 0.22 seconds at second
 
-sol = solve(prob)
+#5x5 takes 16.7 seconds at first
+#5x5 takes 1.21 seconds at second
+
+#10x10 takes 25.2 seconds at first
+#1x1 takes 2.83 seconds at second
+
+#15x15 takes 53.8 seconds at first
+#15x15 takes 9.05 seconds at second
+
+#I'm starting to realize that this isn't very scalable, god damn it
+
+#20x20 takes 134.05 seconds at first
+#20x20 takes 17.42 seconds at second
+
+#5x5 takes 16.7 seconds at first
+#5x5 takes 1.21 seconds at second
 
 
