@@ -101,13 +101,15 @@ end
 left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
 right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
 
-grid = generate_grid(Hexahedron, (3, 3, 3), left, right)
+grid_dimensions = (3, 3, 3)
 
-length_to_node_ratio = 1 / 3
+grid = generate_grid(Hexahedron, grid_dimensions, left, right)
 
-addcellset!(grid, "left", x -> x[1] <= 0 + length_to_node_ratio)
+length_to_node_ratio = right[1] / collect(grid_dimensions)[1]
+
+addcellset!(grid, "left", x -> x[1] <= left[1] + length_to_node_ratio)
 getcellset(grid, "left")
-addcellset!(grid, "right", (x) -> x[1] >= 0.99999999 - (length_to_node_ratio)) #1 doesn't work
+addcellset!(grid, "right", (x) -> x[1] >= (right[1] - 0.0000001) - (length_to_node_ratio)) #1 doesn't work
 getcellset(grid, "right")
 
 struct CellGeometry
@@ -170,13 +172,10 @@ function FVM_cell_geometries(grid, poly_interp, cell_quadrature_rule, facet_quad
         end
     end
 
-    println("HI", unique_connections)
-
     unique_connections = collect(unique_connections)
 
     for i in 1:length(unique_connections) #should probably find a way to connect this with the loop above but I don't know how without a set to get rid of duplicates
         cell_idx = unique_connections[i][1][1]
-        println(cell_idx)
         push!(cell_geometries[cell_idx].unique_connections, unique_connections[i])
     end
     return cell_geometries
@@ -217,12 +216,7 @@ for i in 1:length(cell_geometries)
     end
 end
 
-#println(conds)
-
-#conds = [ThermalConductor(name=Symbol("h_cond_")), G=cell.geometries[i] for cell_geom in cell_geometries for j in 1:length(cell_geom.unique_connections)] # need a way to multiply U by the area between the cells
-
 #Add boundary condition components
-#thought this would be hard but getnodeset(grid, "some_boundary_condition_name") does exactly what I need
 left_node_indicies = collect(getcellset(grid, "left"))
 n_left_bcs = length(left_node_indicies)
 left_bcs = [SomeHeatSource(name=Symbol("heat_source_", i), Q_flow_fixed=5000) for i in 1:n_left_bcs] 
@@ -240,23 +234,31 @@ for i in 1:length(cell_geometries)
     end
 end
 
-for (i, node_idx) in enumerate(left_node_indicies)
-    push!(connections, connect(left_bcs[i].port, nodes[node_idx].port))
+for (i, cell_idx) in enumerate(left_node_indicies)
+    push!(connections, connect(left_bcs[i].port, cells[cell_idx].port))
 end
-
-for (i, node_idx) in enumerate(right_node_indicies)
-    push!(connections, connect(right_bcs[i].port, nodes[node_idx].port))
+"""
+for (i, cell_idx) in enumerate(right_node_indicies)
+    push!(connections, connect(right_bcs[i].port, cells[cell_idx].port))
+end
+"""
+new_conds = []
+for i in 1:length(cell_geometries)
+    for j in 1:length(cell_geometries[i].unique_connections)
+        push!(new_conds, conds[i][j])
+    end
 end
 
 # START OF SIM SETUP
 eqs_total = System[]
 all_systems = vcat(
-    vec(nodes),
-    vec(conds),
+    vec(cells),
+    vec(new_conds),
     vec(left_bcs),
-    vec(right_bcs)
+    #vec(right_bcs)
 )
 
+@timed begin
 @named rod = ODESystem(connections, t, systems=all_systems)
 
 sys = structural_simplify(rod)  
@@ -266,3 +268,4 @@ tspan = (0.0, 10.0)
 prob = ODEProblem(sys, [], tspan)
 
 sol = solve(prob)
+end
