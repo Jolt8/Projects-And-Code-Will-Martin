@@ -211,6 +211,8 @@ for i in 1:length(cell_geometries)
         y_dist = (cell_geometries[i].centroid_coords[2] + cell_geometries[neighbor_cell_idx].centroid_coords[2])
         z_dist = (cell_geometries[i].centroid_coords[3] + cell_geometries[neighbor_cell_idx].centroid_coords[3])
         dist_between_cells = x_dist + y_dist + z_dist #not accurate but good enough for now
+
+        dist_between_cells = norm(collect(cell_geometries[i].centroid_coords) - collect(cell_geometries[neighbor_cell_idx].centroid_coords))
         G_calc = k_thermal * face_area / dist_between_cells
         push!(conds[i], ThermalConductor(name=Symbol("h_cond_", i, "_", j), G=cell_geometries[i].face_areas[j]))
     end
