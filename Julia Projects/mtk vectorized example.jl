@@ -1,106 +1,178 @@
-using ModelingToolkit, DifferentialEquations
-using ModelingToolkit: t_nounits as t, D_nounits as D
+using ModelingToolkit
+using DifferentialEquations
+using Ferrite
+using SparseArrays
+using LinearAlgebra
 
-# Basic electric components
-@connector function Pin(; name)
-    @variables v(t)=1.0 i(t)=1.0 [connect=Flow]
-    System(Equation[], t, [v, i], [], name = name)
+import ModelingToolkit: t_nounits as t, D_nounits as D
+
+# --- Standard MTK Connectors ---
+@connector HeatPort begin
+    @variables begin
+        T(t)
+        Q_flow(t), [connect = Flow]
+    end
 end
 
-function Ground(; name)
-    @named g = Pin()
-    eqs = [g.v ~ 0]
-    compose(System(eqs, t, [], [], name = name), g)
+function HeatConductionDomain(; name, grid, k_thermal, rho, cp)
+    n_cells = getncells(grid)
+    
+    cell_centers = [sum(getcoordinates(cell))/length(getcoordinates(cell)) for cell in CellIterator(grid)]
+    volumes = []
+    cell_qr = QuadratureRule{RefHexahedron}(2)
+    cell_values = CellValues(cell_qr, Lagrange{RefHexahedron, 1}())
+    
+    for cell in CellIterator(grid)
+        vol = 0.0 
+        for qp in 1:getnquadpoints(cell_values)
+            d_vol = getdetJdV(cell_values, qp) 
+            vol += d_vol
+        end
+        push!(volumes, vol)
+    end
+    
+    # Build Sparse Conductance Matrix (K)
+    # Row i, Col j = Conductance between i and j.
+    # Row i, Col i = Sum of conductances (negative)
+    I = Int[]
+    J = Int[]
+    V = Float64[]
+    
+    topology = ExclusiveTopology(grid)
+    
+    for i in 1:n_cells
+        neighbors = [] 
+        for face_idx in 1:nfacets(grid.cells[i])
+             neighbor_info = topology.face_face_neighbor[i, face_idx]
+             if !isempty(neighbor_info)
+                 n_idx = collect(neighbor_info[1].idx)[1] # Neighbor ID
+                 
+                 # Calculate geometric conductance
+                 dist = norm(cell_centers[i] - cell_centers[n_idx])
+                 # Approximate face area (hack for hex)
+                 area = (volumes[i])^(2/3) 
+                 G = k_thermal * area / dist
+                 
+                 push!(I, i); push!(J, n_idx); push!(V, G)
+                 push!(I, i); push!(J, i);     push!(V, -G)
+             end
+        end
+    end
+    
+    K_mat = sparse(I, J, V, n_cells, n_cells)
+    C_vec = volumes .* rho .* cp
+    
+    @variables T(t)[1:n_cells] = [300.0 for i in 1:n_cells]
+    @parameters C[1:n_cells] = C_vec
+    
+    left_set = getcellset(grid, "left")
+    right_set = getcellset(grid, "right")
+    
+    left_idxs = collect(left_set)
+    right_idxs = collect(right_set)
+    
+    port_left = HeatPort(name=:port_left)
+    port_right = HeatPort(name=:port_right)
+    
+    # Vectorized PDE: C * dT/dt = K * T + Q_external
+    
+    eqs = Equation[]
+    
+    conduction_term = K_mat * T 
+    
+    for i in 1:n_cells
+        rhs = conduction_term[i]
+        
+        if i in left_idxs
+            rhs += port_left.Q_flow / length(left_idxs)
+        end
+        
+        if i in right_idxs
+            rhs += port_right.Q_flow / length(right_idxs)
+        end
+        
+        push!(eqs, D(T[i]) ~ rhs / C[i])
+    end
+
+    #average T on boundary face for ports of bcs components
+    
+    T_left = 0
+    for left_idx in left_idxs 
+        T_left += T[left_idx]
+    end
+    T_right = 0
+    for right_idx in right_idxs 
+        T_right += T[right_idx]
+    end
+
+    push!(eqs, port_left.T ~ T_left / length(left_idxs))
+    push!(eqs, port_right.T ~ T_right / length(right_idxs))
+
+    return ODESystem(eqs, t, [T...], [C...]; systems=[port_left, port_right], name=name)
 end
 
-function ConstantVoltage(; name, V = 1.0)
-    val = V
-    @named p = Pin()
-    @named n = Pin()
-    @parameters V = V
-    eqs = [V ~ p.v - n.v
-           0 ~ p.i + n.i]
-    compose(System(eqs, t, [], [V], name = name), p, n)
+#generate mesh
+left_coord = Ferrite.Vec{3}((0.0, 0.0, 0.0))
+right_coord = Ferrite.Vec{3}((1.0, 1.0, 1.0))
+
+grid_dim = (2, 2, 2) 
+
+grid = generate_grid(Hexahedron, grid_dim, left_coord, right_coord)
+
+
+length_to_node_ratio = right_coord[1] / collect(grid_dim)[1]
+
+addcellset!(grid, "left", x -> x[1] <= left_coord[1] + length_to_node_ratio)
+getcellset(grid, "left")
+addcellset!(grid, "right", (x) -> x[1] >= (right_coord[1] - 0.0000001) - (length_to_node_ratio)) #1 doesn't work
+getcellset(grid, "right")
+
+@named pipe = HeatConductionDomain(grid=grid, k_thermal=200, rho=2700, cp=900)
+
+@mtkmodel ConstantTemperature begin
+    @components begin
+        port = HeatPort()
+    end
+    @parameters begin
+        T_fixed = 350.0
+    end
+    @equations begin
+        port.T ~ T_fixed
+    end
 end
 
-@connector function HeatPort(; name)
-    @variables T(t)=293.15 Q_flow(t)=0.0 [connect=Flow]
-    System(Equation[], t, [T, Q_flow], [], name = name)
+@mtkmodel ConstantHeatFlow begin
+    @components begin
+        port = HeatPort()
+    end
+    @parameters begin
+        Q_fixed = 5000.0
+    end
+    @equations begin
+        port.Q_flow ~ -Q_fixed # Negative because flow leaves the source
+    end
 end
 
-function HeatingResistor(; name, R = 1.0, TAmbient = 293.15, alpha = 1.0)
-    @named p = Pin()
-    @named n = Pin()
-    @named h = HeatPort()
-    @variables v(t) RTherm(t)
-    @parameters R=R TAmbient=TAmbient alpha=alpha
-    eqs = [RTherm ~ R * (1 + alpha * (h.T - TAmbient))
-           v ~ p.i * RTherm
-           h.Q_flow ~ -v * p.i # -LossPower
-           v ~ p.v - n.v
-           0 ~ p.i + n.i]
-    compose(System(eqs, t, [v, RTherm], [R, TAmbient, alpha],
-            name = name), p, n, h)
-end
+@named inlet_bc = ConstantHeatFlow(Q_fixed=10000.0)
+#@named outlet_bc = ConstantHeatFlow(Q_fixed=10000.0) #ConstantTemperature Doesn't work here for some reason
+#ConstantHeatFlow(Q_fixed=10000.0)
+#ConstantTemperature(T_fixed=300.0)
 
-function HeatCapacitor(; name, rho = 8050, V = 1, cp = 460, TAmbient = 293.15)
-    @parameters rho=rho V=V cp=cp
-    C = rho * V * cp
-    @named h = HeatPort()
-    eqs = [
-        D(h.T) ~ h.Q_flow / C
-    ]
-    compose(System(eqs, t, [], [rho, V, cp],
-            name = name), h)
-end
-
-function Capacitor(; name, C = 1.0)
-    @named p = Pin()
-    @named n = Pin()
-    @variables v(t) = 0.0
-    @parameters C = C
-    eqs = [v ~ p.v - n.v
-           0 ~ p.i + n.i
-           D(v) ~ p.i / C]
-    compose(System(eqs, t, [v], [C],
-            name = name), p, n)
-end
-
-function parallel_rc_model(i; name, source, ground, R, C)
-    resistor = HeatingResistor(name = Symbol(:resistor, i), R = R)
-    capacitor = Capacitor(name = Symbol(:capacitor, i), C = C)
-    heat_capacitor = HeatCapacitor(name = Symbol(:heat_capacitor, i))
-
-    rc_eqs = [connect(source.p, resistor.p)
-              connect(resistor.n, capacitor.p)
-              connect(capacitor.n, source.n, ground.g)
-              connect(resistor.h, heat_capacitor.h)]
-
-    compose(System(rc_eqs, t, name = Symbol(name, i)),
-        [resistor, capacitor, source, ground, heat_capacitor])
-end
-
-V = 2.0
-@named source = ConstantVoltage(V = V)
-@named ground = Ground()
-N = 50
-Rs = 10 .^ range(0, stop = -4, length = N)
-Cs = 10 .^ range(-3, stop = 0, length = N)
-rc_systems = map(1:N) do i
-    parallel_rc_model(i; name = :rc, source = source, ground = ground, R = Rs[i], C = Cs[i])
-end;
-@variables E(t) = 0.0
-eqs = [
-    D(E) ~ sum(((i, sys),) -> getproperty(sys, Symbol(:resistor, i)).h.Q_flow,
-    enumerate(rc_systems))
+connections = [
+    connect(inlet_bc.port, pipe.port_left)
+    #connect(pipe.port_right, outlet_bc.port)
 ]
-@named _big_rc = System(eqs, t, [E], [])
-@named big_rc = compose(_big_rc, rc_systems)
 
-sys = structural_simplify(big_rc)
+@mtkcompile model = ODESystem(connections, t, systems=[pipe, inlet_bc, #=outlet_bc=#]) #mtk compile seems significantly faster than structural_simplify
 
-tspan = (0.0, 10.0)
+equations(expand_connections(model))
 
-prob = ODEProblem(sys, [], tspan)
+#simplify
+#@time sys = structural_simplify(model) 
 
-sol = solve(prob) #bro even this fails
+prob = ODEProblem(model, [], (0.0, 10.0))
+@time sol = solve(prob, FBDF()) 
+
+#using Plots
+#center_idx = Int(round(getncells(grid)/2))
+#plot(sol, idxs=[pipe.T[center_idx], pipe.port_left.T])
