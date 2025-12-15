@@ -19,4 +19,6 @@ function coolprop_mixture(species, mole_fractions)
     return coolprop_mixture_string
 end
 
-coolprop_mixture(species, mole_fractions)
+mixture = coolprop_mixture(species, mole_fractions)
+
+PropsSI("conductivity", "T", 300u"K", "P", 1u"bar", mixture)
