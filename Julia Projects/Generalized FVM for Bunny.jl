@@ -1,4 +1,5 @@
 using Ferrite
+using FerriteGmsh
 using DifferentialEquations
 using LinearAlgebra #for norm()
 using WriteVTK
@@ -6,6 +7,15 @@ using Dates
 using Unitful
 using SparseArrays
 import SparseConnectivityTracer
+
+#grid = togrid("C://Users//wille//Desktop//FreeCad Projects//Bunny Heat Conduction//Bunny Simple-Body ascii.msh")
+grid = togrid("C://Users//wille//Desktop//FreeCad Projects//Bunny Heat Conduction//Bunny Simple-Body ascii all elements.msh")
+#grid = togrid("C://Users//wille//Desktop//FreeCad Projects//Bunny Heat Conduction//Bunny Simple-Body binary.msh")
+#grid = togrid("C://Users//wille//Desktop//FreeCad Projects//Bunny Heat Conduction//Bunny Simple-Body binary all elements.msh")
+#all four formats work above so that's nice to know
+
+grid.cellsets
+grid.facetsets
 
 struct CellGeometry
     volume::Float64
@@ -92,22 +102,32 @@ end
 
 #Ferrite.cellcenter(RefHexahedron, Float64) #currently this doesn't have an implementation for pyramids :(
 
-
 # END OF FERRITE SECTION
+
+#These parameters would require units in their base form (no kg) on struct definition but kg can be entered in later
+abstract type Properties end
+struct Material <: Properties
+    k::typeof(1.0u"W/(m*K)") 
+    rho::typeof(1.0u"g/m^3")
+    cp::typeof(1.0u"J/(g*K)")
+end
 
 abstract type BC end
 
-struct DirBC <: BC
-    fixed::Float64
+struct DirBC{T} <: BC
+    fixed_func::T
+    properties::Properties
 end
 
-struct NeuBC <: BC
-    flux::Float64
+struct NeuBC{T} <: BC
+    flux_func::T
+    properties::Properties
 end
 
-struct RobBC <: BC
-    fixed::Float64
-    flux::Float64
+struct RobBC{T, C} <: BC
+    fixed_func::T
+    flux_func::C
+    properties::Properties
 end
 
 struct FreeBC <: BC
@@ -115,25 +135,20 @@ end
 
 abstract type FacetBC end
 
-struct FacetNeuBC <: FacetBC
-    flux::Float64
+struct FacetNeuBC{T} <: FacetBC
+    flux_func::T
+    properties::Properties
 end
 
-struct FacetRobBC <: FacetBC
-    fixed::Float64
-    flux::Float64
+struct FacetRobBC{T, C} <: FacetBC
+    fixed_func::T
+    flux_func::C
+
 end
 
 struct FacetFreeBC <: FacetBC
 end
 
-#These parameters would require units in their base form (no kg) on struct definition but kg can be entered in later
-abstract type CellProperties end
-struct Material <: CellProperties
-    k::typeof(1.0u"W/(m*K)") 
-    rho::typeof(1.0u"g/m^3")
-    cp::typeof(1.0u"J/(g*K)")
-end
 
 struct Connection
     cell_idx_a::Int
@@ -147,6 +162,7 @@ struct ProblemParameters
     cell_type_map::Vector{BC} 
     facet_type_map::Matrix{FacetBC}
 end
+
 
 # 2. CREATE A SETUP FUNCTION
 function setup_manual_problem_all_func(grid, cell_geometries, cell_sets, facet_sets) #another possible version
@@ -266,8 +282,9 @@ function setup_matrix_problem(grid, cell_geometries, cell_sets, facet_sets)
     
     # Volumetric sources from NeuBC on cells
     for i in 1:n_cells
-        if typeof(p.cell_type_map[i]) == NeuBC
-            b[i] += p.cell_type_map[i].flux
+        cell_NeuBC = p.cell_type_map[i]
+        if typeof(cell_NeuBC) == NeuBC{typeof(cell_NeuBC.flux_func)} #because NeuBC is NeuBC{T}
+            b[i] += cell_NeuBC.flux_func(cell_geometries[i].volume, cell_NeuBC.properties)
         end
         # Note: We can add RobBC handling here later if needed
     end
@@ -276,10 +293,11 @@ function setup_matrix_problem(grid, cell_geometries, cell_sets, facet_sets)
     for cell in CellIterator(grid)
         i = cellid(cell)
         for j in 1:nfacets(cell)
-            if typeof(p.facet_type_map[i, j]) == FacetNeuBC
+            facet_NeuBC = p.facet_type_map[i, j]
+            if typeof(facet_NeuBC) == FacetNeuBC{typeof(facet_NeuBC.flux_func)} #this is an issue because it will try to get flux_func of FreeBCS which doesn't work
                 # The flux is per unit area, but your setup seems to treat it as total flux.
                 # If it's flux per area, you'd multiply by face area. Assuming total flux for now.
-                b[i] += p.facet_type_map[i, j].flux
+                b[i] += facet_NeuBC[i, j].flux_func(cell_geometries[i].face_areas[j], facet_NeuBC.properties)
             end
         end
     end
@@ -287,10 +305,11 @@ function setup_matrix_problem(grid, cell_geometries, cell_sets, facet_sets)
     # 5. Handle Dirichlet (fixed temperature) boundary conditions
     C_inv_diag = 1.0 ./ p.capacities
     for i in 1:n_cells
-        if typeof(p.cell_type_map[i]) == DirBC
+        cell_DirBC = p.cell_type_map[i]
+        if typeof(cell_DirBC) == DirBC{typeof(cell_DirBC.fixed_func)}
             # For a fixed cell, du/dt must be 0.
             # We achieve this by making its corresponding row in the final J and f_source zero.
-            C_inv_diag[i] = 0.0 # This zeros the row in -C⁻¹*K
+            C_inv_diag[i] = cell_DirBC.fixed_func(cell_DirBC.properties) # This zeros the row in -C⁻¹*K
             b[i] = 0.0          # This zeros the source term for this cell
         end
     end
@@ -337,37 +356,39 @@ struct FacetSet
     type::FacetBC #would be dir, neu, rob
 end
 
-
-#START OF FERRITE SECTION
-left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
-right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
-
-#grid_dimensions = (4, 4, 4)
-grid_dimensions = (100, 10, 10) 
-grid = generate_grid(Hexahedron, grid_dimensions, left, right)
-
-addcellset!(grid, "left", x -> x[1] <= left[1] + right[1] / 2)
-getcellset(grid, "left")
-addcellset!(grid, "default", x -> x[1] >= left[1] + right[1] / 2)
-getcellset(grid, "default")
-
-
 #Cell Definitions
-copper = Material(401.0u"W/(m*K)", 8.96u"g/cm^3", 0.385u"J/(g*K)") 
-steel = Material(45.0u"W/(m*K)", 7.85u"g/cm^3", 0.446u"J/(g*K)")
+meat = Material(0.5u"W/(m*K)", 1u"g/cm^3", 2.98u"J/(g*K)") 
 
-left_set = CellSet("left", heat_volume_transmissibility, heat_volume_capacity, copper, NeuBC(-500.0))
-default_set = CellSet("default", heat_volume_transmissibility, heat_volume_capacity, copper, FreeBC())
+struct VolumetricHeatGeneration <: Properties
+    volumetric_heat_generation::typeof(1.0u"W/m^3")
+end
 
-cell_sets = [left_set, default_set]
+function body_heat_generation_func(volume, p::Properties)
+    return ustrip(volume * p.volumetric_heat_generation)
+end
+
+body_set = CellSet("body", heat_volume_transmissibility, heat_volume_capacity, meat, NeuBC(body_heat_generation_func, VolumetricHeatGeneration(80.0u"W/m^3")))
+
+cell_sets = [body_set]
 
 #Face BCS Definitions
 top = ExclusiveTopology(grid)
-addboundaryfacetset!(grid, top, "flux_in", x -> x[1] ≈ 0.0)
-getfacetset(grid, "flux_in")
-flux_in_set = FacetSet("flux_in", FacetNeuBC(5000.0))
+grid.facetsets
+getfacetset(grid, "fur")
+getfacetset(grid, "base")
 
-facet_sets = [flux_in_set]
+struct WattsPerMeter <: Properties #this name sucks but 
+    watts_per_meter::typeof(1.0u"W/m^2")
+end
+
+function facet_flux_func(area, p::Properties)
+    return ustrip(area * p.watts_per_meter)
+end
+
+fur_set = FacetSet("fur", FacetNeuBC(facet_flux_func, WattsPerMeter(0.0u"W/m^2")))
+base_set = FacetSet("base", FacetNeuBC(facet_flux_func, WattsPerMeter(10000.0u"W/m^2")))
+
+facet_sets = [fur_set, base_set]
 
 @time J, f_source, p_matrix = setup_matrix_problem(grid, cell_geometries, cell_sets, facet_sets)
 
@@ -379,14 +400,14 @@ u0 = fill(293.15, n_cells)
 
 for cell in CellIterator(grid)
     cell_idx = cellid(cell)
-    if cell_idx in collect(getcellset(grid, "left"))
-        u0[cell_idx] = 500.13
-    else
-        u0[cell_idx] = 273.13
-    end
+    #if cell_idx in collect(getcellset(grid, "left"))
+        #u0[cell_idx] = 500.13
+    #else
+    u0[cell_idx] = 273.13
+    #end
 end
 
-tspan = (0.0, 100.0)
+tspan = (0.0, 10000000000.0)
 
 println("Creating matrix-based ODE problem...")
 
@@ -404,7 +425,7 @@ prob_matrix = ODEProblem(func, u0, tspan, ode_params)
 
 println("Solving with matrix function (using a stiff solver)...")
 desired_amount_of_u = 100
-@time sol = solve(prob_matrix, TRBDF2())#, saveat=(tspan[end]/desired_amount_of_u))
+@time sol = solve(prob_matrix, Rodas5(), saveat=(tspan[end]/desired_amount_of_u))
 
 record_sol = false
 
@@ -439,3 +460,27 @@ if record_sol == true
     end
     vtk_save(pvd)
 end
+
+#for use later when we require normals
+#=
+ref_shape = getrefshape(grid.cells[1])
+poly_interp = Lagrange{ref_shape, 1}() #1 = linear elements 2 = quadratic/curved edges
+cell_qr = QuadratureRule{ref_shape}(2) #2 represents the number of integration points. Basically higher number = higher accuracy but more computation
+facet_qr = FacetQuadratureRule{ref_shape}(2)
+
+fv = FacetValues(facet_qr, poly_interp)
+
+dh = DofHandler(grid)
+
+iv = InterfaceValues(facet_qr, poly_interp)
+
+for cell in CellIterator(grid)
+    cell_id = cellid(cell)
+    for fc in FacetIterator(grid, getfacetset(grid, "flux_in"))
+        Ferrite.reinit!(fv, fc)
+        for q_point in 1:getnquadpoints(iv)
+            normal = getnormal(fv, q_point)
+            println(normal)
+        end
+    end
+end=#

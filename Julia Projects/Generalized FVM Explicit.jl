@@ -5,19 +5,8 @@ using WriteVTK
 using Dates
 using Unitful
 using SparseArrays
-
+import SparseConnectivityTracer, ADTypes 
 #START OF FERRITE SECTION
-left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
-right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
-
-#grid_dimensions = (4, 4, 4)
-grid_dimensions = (100, 10, 10) 
-grid = generate_grid(Hexahedron, grid_dimensions, left, right)
-
-addcellset!(grid, "left", x -> x[1] <= left[1] + right[1] / 2)
-getcellset(grid, "left")
-addcellset!(grid, "default", x -> x[1] >= left[1] + right[1] / 2)
-getcellset(grid, "default")
 
 struct CellGeometry
     volume::Float64
@@ -59,6 +48,51 @@ function get_cell_geometries(grid)
 end
 
 cell_geometries = get_cell_geometries(grid)
+
+#=
+function check_mesh(grid, max_acceptable_aspect_ratio)
+    cell_geometries = get_cell_geometries(grid)
+
+    ref_shape = getrefshape(grid.cells[1])
+    cell_qr = QuadratureRule{ref_shape}(2)
+    poly_interp = Lagrange{ref_shape, 1}() 
+    cv = CellValues(cell_qr, poly_interp)
+
+    for (i, conn) in enumerate(cell_geometries)
+        vol = conn.volume
+        areas = conn.face_areas
+        centroid_coords = conn.centroid_coords
+
+        if vol < 0 
+            println("vol at $i ($vol) is less than zero")
+        elseif vol == 0 
+            println("vol at $i ($vol) is zero")
+        end
+        
+        for cell in CellIterator(grid)
+            dist_between_points = zeros(0.0, 7)
+            cell_id = cellid(cell)
+            start_coord = getcoordinates(grid, cell_id)[1] 
+            #this isn't exactly ideal because we're just measuring the distance bewteen one arbitrary start point 
+            #and all the other points but it works for now 
+            Ferrite.reinit!(cv, cell)
+            for j in 2:getnquadpoints(cv)
+                point_coord = getcoordinates(grid, cell_id)[j]
+                dist_between_points = norm(start_coord - point_coord))
+            end
+            
+            aspect_ratio = maximum(dist_between_points) / minimum(dist_between_points)
+            if aspect_ratio >= max_acceptable_aspect_ratio  
+                println("cell $(cell_id)'s aspect ratio of ($aspect_ratio) is greater than max acceptable aspect ratio ($max_acceptable_aspect_ratio)")
+            end
+        end
+    end
+end
+=#
+#check_mesh(grid, 500) #For some reason this takes forever
+
+#Ferrite.cellcenter(RefHexahedron, Float64) #currently this doesn't have an implementation for pyramids :(
+
 # END OF FERRITE SECTION
 
 abstract type BC end
@@ -274,23 +308,35 @@ struct FacetSet
     type::FacetBC #would be dir, neu, rob
 end
 
-#Cell Definitions
-copper = Material(401.0u"W/(m*K)", 8.96u"g/cm^3", 0.385u"J/(g*K)") #FIXME
-steel = Material(45.0u"W/(m*K)", 7.85u"g/cm^3", 0.446u"J/(g*K)") #FIXME
+left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
+right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
 
-left_set = CellSet("left", heat_volume_transmissibility, heat_volume_capacity, copper, NeuBC(500.0))
+#grid_dimensions = (4, 4, 4)
+grid_dimensions = (100, 10, 10) 
+grid = generate_grid(Hexahedron, grid_dimensions, left, right)
+
+addcellset!(grid, "left", x -> x[1] <= left[1] + right[1] / 2)
+getcellset(grid, "left")
+addcellset!(grid, "default", x -> x[1] >= left[1] + right[1] / 2)
+getcellset(grid, "default")
+
+#Cell Definitions
+copper = Material(401.0u"W/(m*K)", 8.96u"g/cm^3", 0.385u"J/(g*K)")
+steel = Material(45.0u"W/(m*K)", 7.85u"g/cm^3", 0.446u"J/(g*K)")
+
+left_set = CellSet("left", heat_volume_transmissibility, heat_volume_capacity, copper, NeuBC(-500.0))
 default_set = CellSet("default", heat_volume_transmissibility, heat_volume_capacity, copper, FreeBC())
 
 cell_sets = [left_set, default_set]
 
 #Face BCS Definitions
+top = ExclusiveTopology(grid)
 addboundaryfacetset!(grid, top, "flux_in", x -> x[1] ≈ 0.0)
 getfacetset(grid, "flux_in")
-flux_in_set = FacetSet("flux_in", FacetNeuBC(500.0))
+flux_in_set = FacetSet("flux_in", FacetNeuBC(5000.0))
 
 facet_sets = [flux_in_set]
 
-#Get p
 @time p = setup_manual_problem_all_func(grid, cell_geometries, cell_sets, facet_sets)
 
 p.facet_type_map
@@ -311,15 +357,22 @@ for cell in CellIterator(grid)
     end
 end
 
+detector = SparseConnectivityTracer.TracerSparsityDetector()
+du0 = copy(u0)
+jac_sparsity = ADTypes.jacobian_sparsity(
+    (du, u) -> FVM_iter_f!(du, u, p, 0.0), du0, u0, detector)
+
 #=
 #TODO:
 Almost done! - Generate a sparsity pattern to use Implicit Solvers (KenCarp4) for finer grids.
 =#
-tspan = (0.0, 1.0) #for some reason I can only get change if tspan is absolutely massive
+tspan = (0.0, 100.0) #for some reason I can only get change if tspan is absolutely massive
 
 println("prob = ODEProblem() time (manual)")
 
-@time prob = ODEProblem(FVM_iter_f!, u0, tspan, p)
+f = ODEFunction(FVM_iter_f!, jac_prototype = float.(jac_sparsity))
+
+@time prob = ODEProblem(f, u0, tspan, p)
 
 #Defining a sparse array
 #=
@@ -335,7 +388,7 @@ K = allocate_matrix(dh)
 
 println("sol time (manual)")
 desired_amount_of_u = 100
-@time sol = solve(prob, Tsit5(), dtmin=0.001, saveat=(tspan[end]/desired_amount_of_u)) 
+@time sol = solve(prob, TRBDF2())#, dtmin=0.001, saveat=(tspan[end]/desired_amount_of_u)) 
 #I wonder if there's a way to automatically adjust the time span to get around x iterations
 
 println("\n# of u: ", length(sol.u))#using this to roughly estimate how long writing the vtk file will take 
@@ -353,7 +406,7 @@ println("\n# of u: ", length(sol.u))#using this to roughly estimate how long wri
 #replace(basename(@__FILE__),r".jl" => "")
 
 #Making the solution avaliable to paraview
-record_sol = true
+record_sol = false
 
 if record_sol == true
     date_and_time = Dates.format(now(), "I.MM.SS p yyyy-mm-dd")
@@ -362,8 +415,6 @@ if record_sol == true
     root_dir = "C://Users//wille//Desktop//Julia_cfd_output_files"
 
     project_name = replace(basename(@__FILE__),r".jl" => "")
-
-    #project_name = "HeatSim "
 
     sim_folder_name = project_name * " " * date_and_time
 
@@ -388,3 +439,27 @@ if record_sol == true
     end
     vtk_save(pvd)
 end
+
+ref_shape = getrefshape(grid.cells[1])
+poly_interp = Lagrange{ref_shape, 1}() #1 = linear elements 2 = quadratic/curved edges
+cell_qr = QuadratureRule{ref_shape}(2) #2 represents the number of integration points. Basically higher number = higher accuracy but more computation
+facet_qr = FacetQuadratureRule{ref_shape}(2)
+
+fv = FacetValues(facet_qr, poly_interp)
+
+dh = DofHandler(grid)
+
+iv = InterfaceValues(facet_qr, poly_interp)
+
+#for use later when we require normals
+#=
+for cell in CellIterator(grid)
+    cell_id = cellid(cell)
+    for fc in FacetIterator(grid, getfacetset(grid, "flux_in"))
+        Ferrite.reinit!(fv, fc)
+        for q_point in 1:getnquadpoints(iv)
+            normal = getnormal(fv, q_point)
+            println(normal)
+        end
+    end
+end=#
