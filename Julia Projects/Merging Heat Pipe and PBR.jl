@@ -267,7 +267,7 @@ debug_callback = DiscreteCallback((u, t, integrator) -> true, print_debug_info)
 @time sol = solve(prob, Rosenbrock23(), callback = debug_callback)
 
 
-#=
+
 t_grid = sol.t
 z_grid = sol[z]
 x_grid = sol[x]
@@ -350,7 +350,7 @@ for i in time_indices_to_animate
     time_idx[] = i  # Update the observable
     sleep(0.01)     # Pause to control the speed
 end
-
+#=
 framerate = 30
 rm("C://Users//wille//Desktop//Legacy-Projects-And-Code-Will-Martin//Julia Projects//reactor_animation.mp4", force = true)
 output_file = "C://Users//wille//Desktop//Legacy-Projects-And-Code-Will-Martin//Julia Projects//reactor_animation.mp4"
@@ -359,9 +359,9 @@ record(fig, output_file, time_indices_to_animate; framerate = framerate) do i
     # All we need to do is update the time index.
     time_idx[] = i
 end
+=#
 
-
-"""
+#=
 desired_max_time = 200000
 max_time_idx = argmin(abs.(t_grid .- desired_max_time))
 time_at_max = t_grid[max_time_idx] #* 1.0u"s"
@@ -408,5 +408,4 @@ plot!(z_slice, sol[F_CO(t, z)][max_time_idx, z_s:z_e], label="CO")
 sol[F_CO(t, z)][max_time_idx, z_s:z_e]
 plot!(z_slice, sol[F_CO2(t, z)][max_time_idx, z_s:z_e], label="CO2")
 sol[F_CO2(t, z)][max_time_idx, z_s:z_e]
-"""
 =#
