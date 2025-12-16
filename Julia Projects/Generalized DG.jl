@@ -14,21 +14,19 @@ import AlgebraicMultigrid
 
 abstract type AbstractPhysics end
 
-struct CellData
-    mass_matrix::AbstractMatrix #to be refined later, don't know what kind of matrix I'll use right now
-    stiffness_matrix::AbstractMatrix
-    centroid::Vec{3, Float64}
-    N_points::Int
-    polynomial_func::Function
-    polynomial_order
+struct DGCellData
+    inv_mass_matrix::Matrix{Float64} #to be refined later, don't know what kind of matrix I'll use right now
+    stiffness_matrix::Matrix{Float64}
+    source_vector::Vector{Float64}
 end
 
-struct Connection
+struct DGConnection
     cell_idx_a::Int
     cell_idx_b::Int
-    area::Float64
+    quad_points_area::Vector{Float64}
     normal::Vec{3, Float64}
-    face_quadrature_points::Vector{Float64}
+    phi_face_a::Matrix{Float64}
+    phi_face_b::Matrix{Float64}
 end
 
 abstract type AbstractBC end
@@ -84,20 +82,48 @@ function build_fvm_problem(grid, bc_map_func)
     cell_values = CellValues(cell_qr, poly_interp)
 
     cells_data = Vector{CellData}(undef, n_cells)
+
+    phi_vec = Float64[]
     
     #volumes and centroids
     for cell in CellIterator(grid)
         id = cellid(cell)
         Ferrite.reinit!(cell_values, cell)
-        vol = sum(getdetJdV(cell_values, qp) for qp in 1:getnquadpoints(cell_values))
-        coords = getcoordinates(cell)
-        cent = sum(coords) / length(coords)
         boundary_map[i] = bc_map_func(grid, i)
-        cells_data[id] = CellData(vol, cent)
+
+        n_base_funcs = getnbasefunctions(cell_values)
+
+        Me = zeros(n_base_funcs, n_base_funcs) # Mass
+        Ke = zeros(n_base_funcs, n_base_funcs) # Stiffness
+
+        for q_point in 1:getnquadpoints(cell_values)
+            q_point_volume = getdetJdV(cell_values, q_point)
+            for i in 1:n_base_funcs
+                phi_i  = shape_value(cell_values, q_point, i)
+                grad_phi_i = shape_gradient(cell_values, q_point, i)
+
+                push!(phi_vec, phi_i)
+                
+                for j in 1:n_base_funcs
+                    phi_j  = shape_value(cell_values, q_point, j)
+                    grad_phi_j = shape_gradient(cell_values, q_point, j)
+                    
+                    # Mass Matrix: Integral(phi_i * phi_j)
+                    Me[i, j] += phi_i * phi_j * q_point_volume
+                    
+                    # Stiffness Matrix: Integral(Grad_phi_i * Grad_phi_j) (Heat Transfer)
+                    # Note: The sign depends on if you integrated by parts. 
+                    # Usually: Stiffness helps move heat smoothly inside the cell.
+                    Ke[i, j] += (grad_phi_i ⋅ grad_phi_j) * q_point_volume * phys.k 
+                end
+            end
+        end
+
+        cells_data[id] = DGCellData(inv(Me), Ke, 1.0)
     end
 
     top = ExclusiveTopology(grid)
-    connections = Vector{Connection}()
+    connections = Vector{DGConnection}()
     
     #store bcs
     boundary_map = Vector{HeatBC}(undef, n_cells)
@@ -111,7 +137,7 @@ function build_fvm_problem(grid, bc_map_func)
         boundary_map[i] = bc_map_func(grid, i)
 
         Ferrite.reinit!(cell_values, cell)
-
+        
         if boundary_map[i].type == :Dirichlet
             push!(dirichlet_idxs, i)
         else
@@ -129,15 +155,10 @@ function build_fvm_problem(grid, bc_map_func)
                     coords = getcoordinates(grid, i)
                     Ferrite.reinit!(facet_values, coords, face_idx)
                     
-                    area = sum(getdetJdV(facet_values, qp) for qp in 1:getnquadpoints(facet_values))
-                    
                     n_ref = getnormal(facet_values, 1) 
-                    
-                    #centroid_a = cells_data[i].centroid
-                    #centroid_b = cells_data[neighbor_idx].centroid
-                    #dist = norm(centroid_b - centroid_a)
 
-                    push!(connections, Connection(i, neighbor_idx, area, n_ref, getweights(grid.cells[i], face_idx)))
+                    quadrature_area = getdetJdV(grid.cells[i], face_idx) * getweights(grid.cells[i], face_idx)
+                    push!(connections, DGConnection(i, neighbor_idx, quadrature_area, n_ref, phi_vec[i], phi_vec[i]))
                 end
             end
         end
