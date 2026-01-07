@@ -1,0 +1,31 @@
+Collection of Notes for the geometry optimization solver I'm working on
+
+NOTE TO FUTURE SELF ON PURE MUTATION:
+    - I tried to pass a struct that acted as a cache for all the variables to prevent GC when recreating the vectors in rebuild_fvm_geometry 
+    - I also tried to pass a cache of node coordinates to mutate every iteration 
+    - Anyways, that didn't work because of this error message when doing the Optimization.solve(...)
+        MethodError: no method matching Float64(::ForwardDiff.Dual{ForwardDiff.Tag{SciMLBase.ParamJacobianWrapper{…}, Float64}, Float64, 12})
+        The type Float64 exists, but no method is defined for this combination of argument types when trying to construct it.
+    - Based on this, it seems that my implementation located in (Geometry Optimization Only Mutation.jl) was enforcing Float64 within the struct 
+      because I can't switch between Float64 and the weird ForwardDiff.Dual Float64 type (or at least I can't think of a way how)
+      thus, it seems like I have to stick with the functional versions of apply_ffd_motion and rebuild_fvm_geometry 
+    - After trying to use Any{} everywhere in (Geometry Optimization Only Mutation trying Any{}.jl), I get the error 
+        Non-concrete element type inside of an `Array` detected.
+        Arrays with non-concrete element types, such as
+        `Array{Union{Float32,Float64}}`, are not supported by the
+        optimizers. Anyways, this is bad for
+        performance so you don't want to be doing this!
+    - Anyways, this is expected and I don't want to painstakingly see what I can and can't adjust to get it to work... Too Bad!
+    - I guess we'll just have to deal with the GC or raise an issue on GitHub
+    - Apparently PreAllocationTools.jl can fix this, but that's for another day when it actually becomes a bottleneck
+
+NOTE: We might have to declare these as constant to prevent dynamic dispatch in the future but we're leaving this out for now
+    - Ex.
+        const cell_neighbor_map = cell_neighbor_map 
+        const const_neighbor_map_respective_node_ids = neighbor_map_respective_node_ids
+
+
+NOTE: What I have learned after a lot of debugging 
+    - We should probably just give up on fixing zygote and ReverseDiff
+    - Instead, we should focus on getting Enzyme to work by preventing any dynamic dispatch because it supports array mutation
+    - While we try to get that to work, we should just use AutoForwardDiff as the deform box 

@@ -1,0 +1,453 @@
+test_grid_dimensions = (10, 5, 5)
+test_left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
+test_right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
+test_grid = generate_grid(Hexahedron, test_grid_dimensions, test_left, test_right)
+    
+function get_cell_topology(grid)
+    n_nodes = length(grid.nodes)
+
+    topology = Vector{Vector{Int}}(undef, n_nodes)
+
+    visited_map = Set()
+
+    for cell in CellIterator(grid)
+        cell_id = cellid(cell)
+        for i in 1:length(cell.nodes)
+            node_id = cell.nodes[i]
+            if !(node_id in visited_map)
+                push!(visited_map, node_id) #add it to the set so its coordinates do not get re-added
+
+                topology[node_id] = [cell_id]
+            else
+                push!(topology[node_id], cell_id)
+            end
+        end
+    end
+    return topology
+
+end
+
+function get_nodes_of_cells(grid)
+    n_cells = length(grid.cells)
+
+    node_topology = Vector{Vector{Int}}(undef, n_cells)
+
+    for cell in CellIterator(grid)
+        cell_id = cellid(cell)
+        node_topology[cell_id] = collect(grid.cells[cell_id].nodes)
+    end
+
+    return node_topology
+
+end
+
+function get_face_nodes(grid, cell_id, face_idx)
+    cell = grid.cells[cell_id]
+    face_nodes = collect(Ferrite.faces(cell)[face_idx])
+    return face_nodes
+end
+
+function get_cell_faces_node_ids(grid)
+    n_cells = length(grid.cells)
+
+    cell_faces_node_ids = NTuple{6, NTuple{4, Int64}}[]
+    #Vector{NTuple{6, NTuple{4, Int64}}}
+
+    for cell_id in 1:n_cells
+        current_cell_faces_node_ids = Ferrite.faces(grid.cells[cell_id])
+        push!(cell_faces_node_ids, current_cell_faces_node_ids)
+    end
+    return cell_faces_node_ids
+
+end
+
+get_cell_faces_node_ids(test_grid)
+
+function get_neighbor_map(grid)
+    #returns:
+    #cell/neighbor pairs (ex. (1, 2) (cell_1 is connected with cell_2))
+    #respective node idxs of cell and neighbor (ex. (2, 8, 44, 38))
+
+    cell_neighbor_pairs = Tuple{Int, Int}[]
+    cell_face_neighbor_face_pairs = Tuple{Tuple{Int, Int}, Tuple{Int, Int}}[] #((cell_id, cell face_idx), (neighbor_id, neighbor face_idx))
+    neighbor_map_respective_node_ids = NTuple{4, Int}[]
+
+    n_cells = length(grid.cells)
+
+    top = ExclusiveTopology(grid)
+    for cell_id in 1:n_cells
+        for face_idx in 1:nfacets(grid.cells[cell_id])
+            neighbor_info = top.face_face_neighbor[cell_id, face_idx]
+
+            if !isempty(neighbor_info)
+                neighbor_id = collect(neighbor_info[1].idx)[1]
+                neighbor_face_idx = collect(neighbor_info[1].idx)[2]
+                
+                if cell_id < neighbor_id
+                    respective_nodes = get_face_nodes(grid, cell_id, face_idx)
+                    
+                    push!(cell_neighbor_pairs, (cell_id, neighbor_id))
+                    push!(cell_face_neighbor_face_pairs, ((cell_id, face_idx), (neighbor_id, neighbor_face_idx)))
+                    push!(neighbor_map_respective_node_ids, ntuple(i -> respective_nodes[i], 4))
+                end
+            end
+        end
+    end
+    return cell_neighbor_pairs, cell_face_neighbor_face_pairs, neighbor_map_respective_node_ids
+
+end
+
+get_neighbor_map(test_grid)
+
+function get_unconnected_map(grid)
+    nodes_of_cells = get_nodes_of_cells(grid)
+    #returns:
+    #list of unconnected faces for each cell (ex. (1, 5) (cell_1's 5th face_idxs is not connected))
+    #respective node idxs of cell face (ex. (2, 8, 44, 38))
+
+    n_cells = length(grid.cells)
+
+    unconnected_cell_face_map = NTuple{2, Int}[]
+    unconnected_map_respective_node_ids = NTuple{4, Int}[]
+
+    n_cells = length(grid.cells)
+
+    top = ExclusiveTopology(grid)
+    connections = Vector{Connection}()
+    for cell_id in 1:n_cells
+        for face_idx in 1:nfacets(grid.cells[cell_id])
+            neighbor_info = top.face_face_neighbor[cell_id, face_idx]
+
+            if isempty(neighbor_info) #note that were checking if it isempty here, not !isempty like above
+                curr_cell_nodes = nodes_of_cells[cell_id]
+                respective_nodes = get_face_nodes(grid, cell_id, face_idx)
+
+                push!(unconnected_cell_face_map, (cell_id, face_idx))
+                push!(unconnected_map_respective_node_ids, ntuple(i -> respective_nodes[i], 4))
+            end
+        end
+    end
+    return unconnected_cell_face_map, unconnected_map_respective_node_ids
+end
+
+function rebuild_fvm_geometry(
+    cell_neighbor_map, neighbor_map_respective_node_ids,
+    unconnected_cell_face_map, unconnected_map_respective_node_ids,
+    node_coordinates, nodes_of_cells
+    )
+    #The cells_data and connections map are still causing GC
+    CoordType = eltype(node_coordinates)
+    T = eltype(CoordType)
+
+    n_cells = length(nodes_of_cells)
+
+    cell_volumes = Vector{T}(undef, n_cells)
+    cell_centroids = Vector{CoordType}(undef, n_cells)
+
+    for cell_id in eachindex(nodes_of_cells)
+        cell_nodes = nodes_of_cells[cell_id]
+
+        n_nodes = length(cell_nodes)
+
+        p = ntuple(8) do i
+            @inbounds node_coordinates[cell_nodes[i]]
+        end
+
+        vol = calculate_hex_volume(p)
+        
+        cent = sum(p) / T(n_nodes)
+
+        cell_volumes[cell_id] = vol
+        cell_centroids[cell_id] = cent
+    end
+
+    n_connections = length(cell_neighbor_map)
+
+    connection_areas = Vector{T}(undef, n_connections)
+    connection_normals = Vector{CoordType}(undef, n_connections)
+    #the above two cause some GC (4% of optimization runtime), connection distances doesn't seem to as much
+    connection_distances = Vector{T}(undef, n_connections)
+
+
+    for (i, (cell_id, neighbor_id)) in enumerate(cell_neighbor_map)
+        face_node_indices = neighbor_map_respective_node_ids[i] #neighbor_map_respective_node_ids[i] looks like (1, 4, 7, 21) 
+        node_1_coords = node_coordinates[face_node_indices[1]]
+        node_2_coords = node_coordinates[face_node_indices[2]]
+        node_3_coords = node_coordinates[face_node_indices[3]]
+        node_4_coords = node_coordinates[face_node_indices[4]]
+
+        #get_area
+        cross_a = cross_product(node_2_coords - node_1_coords, node_3_coords - node_1_coords)
+        cross_b = cross_product(node_3_coords - node_1_coords, node_4_coords - node_1_coords)
+        
+        area_vec_1 = 0.5 * cross_a
+        area_vec_2 = 0.5 * cross_b
+
+        total_area_vec = area_vec_1 + area_vec_2
+        total_area = norm(total_area_vec)
+
+        #get normal
+        cell_normal = normalize(total_area_vec)
+
+        #get distance 
+        dist = norm(cell_centroids[cell_id] - cell_centroids[neighbor_id])
+        
+        connection_areas[i] = total_area
+        connection_normals[i] = cell_normal
+        connection_distances[i] = dist
+    end
+
+    n_unconnected_faces = length(unconnected_cell_face_map)
+
+    unconnected_areas = Vector{NTuple{6, T}}(undef, n_unconnected_faces)
+
+    for (i, (cell_id, face_idx)) in enumerate(unconnected_cell_face_map)
+        for face_idx in unconnected_cell_face_map[i]
+            face_node_indices = unconnected_map_respective_node_ids[i] #unconnected_map_respective_node_ids[i] looks like (1, 4, 7, 21) 
+            node_1_coords = node_coordinates[face_node_indices[1]]
+            node_2_coords = node_coordinates[face_node_indices[2]]
+            node_3_coords = node_coordinates[face_node_indices[3]]
+            node_4_coords = node_coordinates[face_node_indices[4]]
+
+            #get_area
+            cross_a = cross_product(node_2_coords - node_1_coords, node_3_coords - node_1_coords)
+            cross_b = cross_product(node_3_coords - node_1_coords, node_4_coords - node_1_coords)
+            
+            area_vec_1 = 0.5 * cross_a
+            area_vec_2 = 0.5 * cross_b
+
+            total_area_vec = area_vec_1 + area_vec_2
+            total_area = norm(total_area_vec)
+
+            unconnected_areas[cell_id][face_idx] = total_area 
+        end
+    end
+    return cell_volumes, cell_centroids, connection_areas, connection_normals, connection_distances, unconnected_areas
+end
+
+    function FVM_iter_f!(
+    du, u, p,
+    cell_neighbor_map, neighbor_map_respective_node_ids,
+    unconnected_cell_face_map, unconnected_map_respective_node_ids,
+    nodes_of_cells, db_nodes_of_cells,
+    cell_map, intrinsic_coordinates,
+    cell_mat_id_map, bc_sys::BoundarySystem, heat_phys::Vector{HeatPhysics}, ax, db_grid_n_nodes
+    )
+    #you could add another vector for fluid_phys if needed like fluid_phys::Vector{FluidPhysics}
+
+    code
+    Code
+    download
+    content_copy
+    expand_less
+    unflattened_p = eachcol(reshape(p, 3, db_grid_n_nodes))
+
+    new_node_coordinates = apply_ffd_motion(unflattened_p, db_nodes_of_cells, cell_map, intrinsic_coordinates)
+
+    cell_volumes, 
+    cell_centroids, #cell volumes and cell centroids are accessed at the id of the cell
+    connection_areas, 
+    connection_normals, 
+    connection_distances, #connection areas, normals, and distances are simply accessed by their location in the list which corresponds to the respective connection in cell_neighbor_map
+    unconnected_areas = rebuild_fvm_geometry(
+        cell_neighbor_map, neighbor_map_respective_node_ids, 
+        unconnected_cell_face_map, unconnected_map_respective_node_ids,
+        new_node_coordinates, nodes_of_cells
+    )
+
+    #there's gotta be a better way to format this shit above
+
+    u = ComponentVector(u, ax)
+    du = ComponentVector(du, ax)
+
+    du .= 0.0
+
+    for (i, (idx_a, idx_b)) in enumerate(cell_neighbor_map)
+        mat_a = cell_mat_id_map[idx_a]
+        mat_b = cell_mat_id_map[idx_b]
+
+        k_a = heat_phys[mat_a].k
+        k_b = heat_phys[mat_b].k
+
+        k_effective = get_k_effective(k_a, k_b)
+
+        #temp 1 
+        u_a = u.temp1[idx_a]
+        u_b = u.temp1[idx_b]
+
+        F_1 = numerical_flux(k_effective, u_a, u_b, connection_areas[i], connection_distances[i])
+        
+        du.temp1[idx_a] -= F_1
+        du.temp1[idx_b] += F_1
+
+        #temp 2 - while this variable seems useless, it's just to test multiple variables
+        u_a_2 = u.temp2[idx_a]
+        u_b_2 = u.temp2[idx_b]
+
+        F_2 = numerical_flux(k_effective, u_a_2, u_b_2, connection_areas[i], connection_distances[i])
+
+        du.temp2[idx_a] -= F_2
+        du.temp2[idx_b] += F_2
+    end
+
+    # Source and Capacity Loop
+    for cell_id in bc_sys.free_idxs
+        vol = cell_volumes[cell_id]
+        mat = cell_mat_id_map[cell_id]
+        
+        rho = heat_phys[mat].rho
+        cp  = heat_phys[mat].cp
+
+        S = heat_phys[mat].source_term * vol 
+        # we should probably create separate containers in heat_phys for both source terms on a per area and per cell basis
+
+        du.temp1[cell_id] += S
+        du.temp2[cell_id] += S
+        #=
+        h_coeff = 50.0 # Convection coefficient
+
+        T_ambient = 298.0
+        # Approximation of surface area for a cell, or calculate properly
+
+        # Heat loss to environment
+        q_convection = h_coeff * unconnected_areas[i] * (u.temp1[i] - T_ambient)
+
+        # Subtract this from the residual
+        du.temp1[i] -= q_convection
+        =#
+        
+        cap = capacity(rho, cp, vol)
+        du.temp1[cell_id] /= cap
+        du.temp2[cell_id] /= cap
+    end
+
+    for cell_id in bc_sys.dirichlet_idxs
+        du.temp1[cell_id] = 0.0
+        du.temp2[cell_id] = 0.0
+    end
+
+end
+
+grid_dimensions = (10, 5, 5)
+left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
+right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
+grid = generate_grid(Hexahedron, grid_dimensions, left, right)
+
+cell_half_dist = (right[1] / grid_dimensions[1]) / 2
+addcellset!(grid, "copper", x -> x[1] <= (left[1] + (right[1] / 2) + cell_half_dist))
+addcellset!(grid, "steel", x -> x[1] >= left[1] + (right[1] / 2))
+
+heated_copper_physics = HeatPhysics(401.0, 8960.0, 385.0, 0) #note that if we created a new struct for copper_physics performance would die
+steel_physics = HeatPhysics(30.0, 8000.0, 460.0, 0)
+
+heat_phys_vec = [heated_copper_physics, steel_physics]
+
+copper_cell_set_idxs = Set(getcellset(grid, "copper"))
+steel_cell_set_idxs = Set(getcellset(grid, "steel"))
+
+struct CellSet
+mat_id::Int
+cell_set_idxs::Set{Int}
+end
+
+copper_set = CellSet(1, copper_cell_set_idxs)
+steel_set = CellSet(2, steel_cell_set_idxs)
+
+cell_sets = [copper_set, steel_set]
+
+free_idxs = Int[]
+dirichlet_idxs = Int[]
+
+function my_bc_mapper(cell_id)
+if cell_id in copper_cell_set_idxs
+bc_type_a = HeatBC(:Neumann, 500.0) #use :Dirichlet to fix temperature to initial in HeatBC
+bc_type_b = HeatBC(:Neumann, 700.0)
+push!(free_idxs, cell_id)
+return [bc_type_a, bc_type_b]
+elseif cell_id in steel_cell_set_idxs
+bc_type_a = HeatBC(:Neumann, 300.0)
+bc_type_b = HeatBC(:Neumann, 400.0)
+push!(free_idxs, cell_id)
+return [bc_type_a, bc_type_b]
+end
+end
+
+temp1_bcs = HeatBC[]
+temp2_bcs = HeatBC[]
+
+n_cells = length(grid.cells)
+n_vars = 2
+
+for cell_id in 1:n_cells
+bcs = my_bc_mapper(cell_id) #returns vector [BC1, BC2]
+push!(temp1_bcs, bcs[1])
+push!(temp2_bcs, bcs[2])
+end
+
+boundary_map = MultiPhysicsBCs(temp1_bcs, temp2_bcs)
+
+bc_sys = BoundarySystem(boundary_map, free_idxs, dirichlet_idxs)
+
+db_grid_dimensions = (5, 5, 5)
+db_left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
+db_right = Ferrite.Vec{3}((1.1, 1.1, 1.1)) #has to be larger than the original grid
+db_grid = generate_grid(Hexahedron, db_grid_dimensions, db_left, db_right)
+
+u_proto = ComponentArray(temp1 = zeros(n_cells), temp2 = zeros(n_cells))
+
+for cell_id in 1:n_cells
+u_proto.temp1[cell_id] = bc_sys.boundary_map.temp1[cell_id].initial
+u_proto.temp2[cell_id] = bc_sys.boundary_map.temp2[cell_id].initial
+end
+
+cell_mat_id_map = Int[]
+
+for cell in CellIterator(grid)
+cell_id = cellid(cell)
+for i in eachindex(cell_sets)
+if cell_id in cell_sets[i].cell_set_idxs
+push!(cell_mat_id_map, cell_sets[i].mat_id)
+end
+end
+end
+
+u_axes = getaxes(u_proto)[1]
+#we use u_proto and u_axes in the function because KrylovJL_GMRES complains when a component array from ComponentArrays.jl is passed in
+
+u0 = Vector(u_proto)
+
+initial_node_coordinates = get_node_coordinates(grid)
+
+cell_neighbor_map, neighbor_map_respective_node_ids = get_neighbor_map(grid)
+
+unconnected_cell_face_map, unconnected_map_respective_node_ids = get_unconnected_map(grid)
+
+nodes_of_cells = get_nodes_of_cells(grid)
+
+proto_p_guess = get_node_coordinates(db_grid) #27 element Vector{Vector{}
+
+p_guess = reduce(vcat, proto_p_guess) #81 element Vector{} # we do this because Optimization.solve(...) complains about vectors of vectors
+
+db_nodes_of_cells = get_nodes_of_cells(db_grid)
+
+cell_map, intrinsic_coordinates = precompute_ffd_data(proto_p_guess, db_nodes_of_cells, initial_node_coordinates)
+
+db_grid_n_nodes = length(db_grid.nodes)
+
+unflattened_p = eachcol(reshape(p_guess, 3, db_grid_n_nodes))
+
+new_node_coordinates = apply_ffd_motion(unflattened_p, db_nodes_of_cells, cell_map, intrinsic_coordinates)
+
+#= NOTE: We might have to declare these as constant to prevent dynamic dispatch in the future but we're leaving this out for now
+const cell_neighbor_map = cell_neighbor_map
+const const_neighbor_map_respective_node_ids = neighbor_map_respective_node_ids
+=#
+
+f_closure = (du, u, p) -> FVM_iter_f!(
+du, u, p,
+cell_neighbor_map, neighbor_map_respective_node_ids,
+unconnected_cell_face_map, unconnected_map_respective_node_ids,
+nodes_of_cells, db_nodes_of_cells,
+cell_map, intrinsic_coordinates,
+cell_mat_id_map, bc_sys, heat_phys_vec, u_axes, db_grid_n_nodes
+)
