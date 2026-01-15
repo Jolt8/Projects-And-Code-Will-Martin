@@ -17,7 +17,7 @@ using ComponentArrays
 using StaticArrays
 using ProfileView
 
-grid_dimensions = (10, 5, 5) 
+grid_dimensions = (3, 3, 3) 
 left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
 right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
 grid = generate_grid(Hexahedron, grid_dimensions, left, right)
@@ -408,9 +408,18 @@ function rebuild_fvm_geometry(
     n_unconnected_faces = length(unconnected_cell_face_map)
     
     unconnected_areas = Vector{SVector{6, T}}(undef, n_unconnected_faces)
+    unconnected_normals = Vector{SVector{6, CoordType}}(undef, n_unconnected_faces)
 
     for (i, (cell_id, face_idx)) in enumerate(unconnected_cell_face_map)
         areas = MVector{6, T}(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        normals = MVector{6, CoordType}(
+            (0.0, 0.0, 0.0), 
+            (0.0, 0.0, 0.0), 
+            (0.0, 0.0, 0.0), 
+            (0.0, 0.0, 0.0), 
+            (0.0, 0.0, 0.0), 
+            (0.0, 0.0, 0.0)
+        )
         for face_idx in 1:6
             face_node_indices = unconnected_map_respective_node_ids[face_idx] #unconnected_map_respective_node_ids[i] looks like (1, 4, 7, 21) 
             node_1_coords = node_coordinates[face_node_indices[1]]
@@ -429,10 +438,14 @@ function rebuild_fvm_geometry(
             total_area = norm(total_area_vec)
 
             areas[face_idx] = total_area 
+
+            normals[face_idx] = normalize(total_area_vec)
         end
         unconnected_areas[cell_id] = areas
+
+        unconnected_normals[cell_id] = normals
     end
-    return cell_volumes, cell_centroids, connection_areas, connection_normals, connection_distances, unconnected_areas
+    return cell_volumes, cell_centroids, connection_areas, connection_normals, connection_distances, unconnected_areas, unconnected_normals
 end
 
 #=
@@ -442,41 +455,32 @@ NOTE TO FUTURE SELF ON PURE MUTATION:
 =#
 
 
-struct CellData{T, V}
-    volume::T
-    centroid::V
-end
-
-struct Connection{T, V}
-    area::T
-    normal::V
-    distance::T
-end
-
 abstract type AbstractBC end
 
-struct HeatBC <: AbstractBC
+struct VelBC <: AbstractBC
+    type::Symbol 
+    initial::Float64
+end
+
+struct PressureBC <: AbstractBC
     type::Symbol 
     initial::Float64
 end
 
 abstract type AbstractPhysics end
 
-struct HeatPhysics <: AbstractPhysics
+struct FluidPhysics <: AbstractPhysics
     k::Float64 
     rho::Float64
+    mu::Float64
     cp::Float64
-    source_term::Float64 #volumetric heating
-end
-
-struct FVMMesh{C, K}
-    mesh_cells::C
-    connections::K
 end
 
 struct MultiPhysicsBCs
-    temp1::Vector{HeatBC}
-    temp2::Vector{HeatBC} 
+    vel_x::Vector{VelBC}
+    vel_y::Vector{VelBC}
+    vel_z::Vector{VelBC}
+    pressure::Vector{PressureBC}
 end
 
 struct BoundarySystem
@@ -491,36 +495,21 @@ function numerical_flux(k_avg, T_L, T_R, area, dist)
     return q * area
 end
 
-function source(source_term, vol)
-    return source_term * vol
+function get_prop_harmonic_mean(prop_a, prop_b)
+    return 2 * prop_a * prop_b / (prop_a + prop_b)
 end
 
-function capacity(rho, cp, vol)
-    return rho * cp * vol
+function upwind(u_left, u_right, mass_flow_rate)
+    if mass_flow_rate > 0
+        return u_left
+    else 
+        return u_right
+    end
 end
 
-function get_k_effective(k_a, k_b)
-    return 2 * k_a * k_b / (k_a + k_b)
-end
+[Float64[0.0, 0.0, 0.0] for _ in 1:10]
 
-function numerical_flux(k_avg, T_L, T_R, area, dist)
-    grad_T = (T_R - T_L) / dist
-    q = -k_avg * grad_T
-    return q * area
-end
-
-function source(source_term, vol)
-    return source_term * vol
-end
-
-function capacity(rho, cp, vol)
-    return rho * cp * vol
-end
-
-function get_k_effective(k_a, k_b)
-    return 2 * k_a * k_b / (k_a + k_b)
-end
-
+[Real[0.0, 0.0, 0.0] for _ in 1:10]
 
 function FVM_iter_f!(
         du, u, p,
@@ -528,7 +517,7 @@ function FVM_iter_f!(
         unconnected_cell_face_map, unconnected_map_respective_node_ids,
         nodes_of_cells, db_nodes_of_cells,
         cell_map, intrinsic_coordinates,
-        cell_mat_id_map, bc_sys::BoundarySystem, heat_phys::Vector{HeatPhysics}, ax, db_grid_n_nodes
+        cell_mat_id_map, bc_sys::BoundarySystem, fluid_phys::Vector{FluidPhysics}, ax, db_grid_n_nodes
     )
     #you could add another vector for fluid_phys if needed like fluid_phys::Vector{FluidPhysics}
 
@@ -541,7 +530,8 @@ function FVM_iter_f!(
     connection_areas, 
     connection_normals, 
     connection_distances, #connection areas, normals, and distances are simply accessed by their location in the list which corresponds to the respective connection in cell_neighbor_map
-    unconnected_areas = rebuild_fvm_geometry(
+    unconnected_areas,
+    unconnected_normals = rebuild_fvm_geometry(
         cell_neighbor_map, neighbor_map_respective_node_ids, 
         unconnected_cell_face_map, unconnected_map_respective_node_ids,
         new_node_coordinates, nodes_of_cells
@@ -554,128 +544,219 @@ function FVM_iter_f!(
     
     du .= 0.0
 
-    for (i, (idx_a, idx_b)) in enumerate(cell_neighbor_map)
-        mat_a = cell_mat_id_map[idx_a]
-        mat_b = cell_mat_id_map[idx_b]
+    T = typeof(u.pressure[1])
 
-        k_a = heat_phys[mat_a].k
-        k_b = heat_phys[mat_b].k
+    n_cells = length(cell_volumes)
 
-        k_effective = get_k_effective(k_a, k_b)
+    #grad_p = Vector{MVector{3, T}}(undef, n_cells)
 
-        #temp 1 
-        u_a = u.temp1[idx_a]
-        u_b = u.temp1[idx_b]
-
-        F_1 = numerical_flux(k_effective, u_a, u_b, connection_areas[i], connection_distances[i])
+    grad_p = [Real[0.0, 0.0, 0.0] for _ in 1:n_cells]
+    
+    # Loop over internal faces for Gradients
+    for (i, (A, B)) in enumerate(cell_neighbor_map)
+        area = connection_areas[i]
+        norm = connection_normals[i] # Points A -> B
         
-        du.temp1[idx_a] -= F_1
-        du.temp1[idx_b] += F_1
+        p_face = 0.5 * (u.pressure[A] + u.pressure[B])
+        
+        contribution = p_face * area * norm
+        #=
+        if A == 1 && B == 2
+            #println("grad p", grad_p[1])
+            println(contribution)
+        end
+        =#
+        grad_p[A] += contribution #this one, (2nd issue)
+        grad_p[B] -= contribution #this one, (3rd issue)
+    end
 
-        #temp 2 - while this variable seems useless, it's just to test multiple variables
-        u_a_2 = u.temp2[idx_a]
-        u_b_2 = u.temp2[idx_b]
+    # Loop over Boundary faces for Gradients (Crucial for Neumann/Dirichlet consistency)
+    for (i, (cell_id, face_idx)) in enumerate(unconnected_cell_face_map)
+        area = unconnected_areas[cell_id][face_idx] 
+        norm = unconnected_normals[cell_id][face_idx]
+        # Note: You need the normal for the unconnected face. 
+        # Your current rebuild_fvm_geometry returns areas as scalars for unconnected?
+        # You effectively need the normal here. 
+        # For now, assuming Zero Gradient at boundaries for P reconstruction (Simplified):
+        p_face = u.pressure[cell_id] 
+        # We need the normal vector calculation for unconnected faces in your geometry struct.
+        # skipping explicit boundary gradient addition for this snippet to keep it running, 
+        # but technically required.
+        contribution = p_face * area * norm
+        grad_p[cell_id] += contribution #this one, (1st issue)
+    end
 
-        F_2 = numerical_flux(k_effective, u_a_2, u_b_2, connection_areas[i], connection_distances[i])
+    # Normalize Gradients by Volume
+    for i in 1:n_cells
+        grad_p[i] = grad_p[i] / u.pressure[i] #and this one, (4th issue)
+        #all cause errors for ForwardDiff.gradient erroring with 
+        #=
+            LoadError: MethodError: no method matching Float64(::ForwardDiff.Dual{ForwardDiff.Tag{typeof(CostFun),Float64},Float64,3})
+            Closest candidates are:
+            Float64(::Real, ::RoundingMode) where T<:AbstractFloat at rounding.jl:200
+            Float64(::T) where T<:Number at boot.jl:715
+            Float64(::Int8) at float.jl:60
+        =#
+    end
 
-        du.temp2[idx_a] -= F_2
-        du.temp2[idx_b] += F_2
+    for (i, (A, B)) in enumerate(cell_neighbor_map)
+        #A is the cell_id of the current cell and B is the cell_id of the neighboring cell
+        mat_a = cell_mat_id_map[A]
+        mat_b = cell_mat_id_map[B]
+
+        area = connection_areas[i]
+        norm = connection_normals[i]
+        dist = connection_distances[i]
+
+        rho_a = fluid_phys[mat_a].rho
+        rho_b = fluid_phys[mat_b].rho
+        rho_avg = 0.5 * (rho_a + rho_b) 
+
+        mu_a = fluid_phys[mat_a].mu
+        mu_b = fluid_phys[mat_b].mu
+        mu_avg = 0.5 * (mu_a + mu_b) 
+
+        avg_vel_x = 0.5 * (u.vel_x[A] + u.vel_x[B])
+        avg_vel_y = 0.5 * (u.vel_y[A] + u.vel_y[B])
+        avg_vel_z = 0.5 * (u.vel_z[A] + u.vel_z[B])
+
+        vn_avg = (avg_vel_x * norm[1] + avg_vel_y * norm[2] + avg_vel_z * norm[3])
+
+        p_diff = u.pressure[B] - u.pressure[A]
+
+        vol_avg = 0.5 * (cell_volumes[A] + cell_volumes[B])
+        rhie_chow_d = 0.5 * vol_avg
+
+        grad_p_avg = 0.5 * (grad_p[A] + grad_p[B])
+        grad_p_proj = dot(grad_p_avg, norm)
+
+        grad_diff = (p_diff / dist) - grad_p_proj
+
+        m_dot = rho_avg * area * (vn_avg - rhie_chow_d * grad_diff)
+
+        du.pressure[A] -= m_dot
+        du.pressure[B] += m_dot
+
+        diff_flux_x = mu_avg * (u.vel_x[B] - u.vel_x[A]) / dist *  area
+        diff_flux_y = mu_avg * (u.vel_y[B] - u.vel_y[A]) / dist *  area
+        diff_flux_z = mu_avg * (u.vel_z[B] - u.vel_z[A]) / dist *  area
+
+        #Convection momentum flux
+        u_face_x = upwind(u.vel_x[A], u.vel_x[B], m_dot)
+        u_face_y = upwind(u.vel_y[A], u.vel_y[B], m_dot)
+        u_face_z = upwind(u.vel_z[A], u.vel_z[B], m_dot)
+        
+        conv_flux_x = m_dot * u_face_x
+        conv_flux_y = m_dot * u_face_y
+        conv_flux_z = m_dot * u_face_z
+
+        #Pressure momentum flux
+        p_face_val = 0.5 * (u.pressure[A] + u.pressure[B])
+        press_x = p_face_val * area * norm[1]
+        press_y = p_face_val * area * norm[2]
+        press_z = p_face_val * area * norm[3]
+
+        du.vel_x[A] += (diff_flux_x - conv_flux_x - press_x)
+        du.vel_x[B] -= (diff_flux_x - conv_flux_x - press_x)
+        
+        du.vel_y[A] += (diff_flux_y - conv_flux_y - press_y)
+        du.vel_y[B] -= (diff_flux_y - conv_flux_y - press_y)
+        
+        du.vel_z[A] += (diff_flux_z - conv_flux_z - press_z)
+        du.vel_z[B] -= (diff_flux_z - conv_flux_z - press_z)
     end
 
     # Source and Capacity Loop
+    #=
     for cell_id in bc_sys.free_idxs
-        vol = cell_volumes[cell_id]
-        mat = cell_mat_id_map[cell_id]
-        
-        rho = heat_phys[mat].rho
-        cp  = heat_phys[mat].cp
-
-        S = heat_phys[mat].source_term * vol 
-        # we should probably create separate containers in heat_phys for both source terms on a per area and per cell basis
-
-        du.temp1[cell_id] += S
-        du.temp2[cell_id] += S
-        #=
-        h_coeff = 50.0 # Convection coefficient
-
-        T_ambient = 298.0
-        # Approximation of surface area for a cell, or calculate properly
-
-        # Heat loss to environment
-        q_convection = h_coeff * unconnected_areas[i] * (u.temp1[i] - T_ambient)
-
-        # Subtract this from the residual
-        du.temp1[i] -= q_convection
-        =#
-        
-        cap = capacity(rho, cp, vol)
-        du.temp1[cell_id] /= cap
-        du.temp2[cell_id] /= cap
+        something here when it's needed
     end
+    =#
 
+    #=
     for cell_id in bc_sys.dirichlet_idxs
         du.temp1[cell_id] = 0.0
         du.temp2[cell_id] = 0.0
     end
+    =#
 end
 
-grid_dimensions = (10, 5, 5) 
+grid_dimensions = (10, 5, 5)
 left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
 right = Ferrite.Vec{3}((1.0, 1.0, 1.0))
 grid = generate_grid(Hexahedron, grid_dimensions, left, right)
 
+cell_dist = (right[1] / grid_dimensions[1])
 cell_half_dist = (right[1] / grid_dimensions[1]) / 2 
-addcellset!(grid, "copper", x -> x[1] <= (left[1] + (right[1] / 2) + cell_half_dist))
-addcellset!(grid, "steel", x -> x[1] >= left[1] + (right[1] / 2))
+addcellset!(grid, "inlet", x -> x[1] <= left[1] + cell_dist)
+addcellset!(grid, "internal cells", x -> x[1] >= left[1] + cell_half_dist && x[1] <= right[1] - cell_half_dist)
+addcellset!(grid, "outlet", x -> x[1] >= right[1] - cell_dist)
 
-heated_copper_physics = HeatPhysics(401.0, 8960.0, 385.0, 0) #note that if we created a new struct for copper_physics performance would die
-steel_physics = HeatPhysics(30.0, 8000.0, 460.0, 0)
+air_physics = FluidPhysics(401.0, 1.225, 1.8e-5, 1.0) #note that if we created a new struct for copper_physics performance would die
+#steel_physics = FluidPhysics(30.0, 8000.0, 0.01, 1.0)
 
-heat_phys_vec = [heated_copper_physics, steel_physics]
+fluid_phys_vec = [air_physics, air_physics, air_physics]#, steel_physics]
 
-copper_cell_set_idxs = Set(getcellset(grid, "copper"))
-steel_cell_set_idxs = Set(getcellset(grid, "steel"))
+inlet_cell_set_idxs = Set(getcellset(grid, "inlet"))
+internal_cell_set_idxs = Set(getcellset(grid, "internal cells"))
+outlet_cell_set_idxs = Set(getcellset(grid, "outlet"))
 
 struct CellSet
     mat_id::Int
     cell_set_idxs::Set{Int}
 end
 
-copper_set = CellSet(1, copper_cell_set_idxs)
-steel_set = CellSet(2, steel_cell_set_idxs)
+inlet_set = CellSet(1, inlet_cell_set_idxs)
+internal_cells_set = CellSet(2, internal_cell_set_idxs)
+outlet_set = CellSet(3, outlet_cell_set_idxs)
 
-cell_sets = [copper_set, steel_set]
+cell_sets = [inlet_set, internal_cells_set, outlet_set]
 
 free_idxs = Int[]
 dirichlet_idxs = Int[]
 
+#use :Dirichlet to fix a value to the initial value
 function my_bc_mapper(cell_id)
-    if cell_id in copper_cell_set_idxs
-        bc_type_a = HeatBC(:Neumann, 500.0) #use :Dirichlet to fix temperature to initial in HeatBC
-        bc_type_b = HeatBC(:Neumann, 700.0)
+    if cell_id in inlet_cell_set_idxs
+        vel_x_bc = VelBC(:Dirichlet, 0.0) 
+        vel_y_bc = VelBC(:Dirichlet, 0.0) 
+        vel_z_bc = VelBC(:Dirichlet, 0.0) 
+        pressure_bc = PressureBC(:Dirichlet, 200000)
+        push!(dirichlet_idxs, cell_id)
+        return [vel_x_bc, vel_y_bc, vel_z_bc, pressure_bc] 
+    elseif cell_id in internal_cell_set_idxs
+        vel_x_bc = VelBC(:Neumann, 0.0) 
+        vel_y_bc = VelBC(:Neumann, 0.0) 
+        vel_z_bc = VelBC(:Neumann, 0.0) 
+        pressure_bc = PressureBC(:Neumann, 100000)
         push!(free_idxs, cell_id)
-        return [bc_type_a, bc_type_b] 
-    elseif cell_id in steel_cell_set_idxs
-        bc_type_a = HeatBC(:Neumann, 300.0)
-        bc_type_b = HeatBC(:Neumann, 400.0)
+        return [vel_x_bc, vel_y_bc, vel_z_bc, pressure_bc] 
+    elseif cell_id in outlet_cell_set_idxs
+        vel_x_bc = VelBC(:Neumann, 0.0) 
+        vel_y_bc = VelBC(:Neumann, 0.0) 
+        vel_z_bc = VelBC(:Neumann, 0.0) 
+        pressure_bc = PressureBC(:Neumann, 100000)
         push!(free_idxs, cell_id)
-        return [bc_type_a, bc_type_b]
+        return [vel_x_bc, vel_y_bc, vel_z_bc, pressure_bc] 
     end
 end
 
-temp1_bcs = HeatBC[]
-temp2_bcs = HeatBC[]
+vel_x_bcs = VelBC[]
+vel_y_bcs = VelBC[]
+vel_z_bcs = VelBC[]
+pressure_bcs = PressureBC[]
 
 n_cells = length(grid.cells)
-n_vars = 2
 
 for cell_id in 1:n_cells
-    bcs = my_bc_mapper(cell_id) #returns vector [BC1, BC2]
-    push!(temp1_bcs, bcs[1])
-    push!(temp2_bcs, bcs[2])
+    bcs = my_bc_mapper(cell_id) #returns vector [BC1, BC2, BC3, BC4]
+    push!(vel_x_bcs, bcs[1])
+    push!(vel_y_bcs, bcs[2])
+    push!(vel_z_bcs, bcs[3])
+    push!(pressure_bcs, bcs[4])
 end
 
-boundary_map = MultiPhysicsBCs(temp1_bcs, temp2_bcs)
+boundary_map = MultiPhysicsBCs(vel_x_bcs, vel_y_bcs, vel_z_bcs, pressure_bcs)
 
 bc_sys = BoundarySystem(boundary_map, free_idxs, dirichlet_idxs)
 
@@ -684,11 +765,13 @@ db_left = Ferrite.Vec{3}((0.0, 0.0, 0.0))
 db_right = Ferrite.Vec{3}((1.1, 1.1, 1.1)) #has to be larger than the original grid
 db_grid = generate_grid(Hexahedron, db_grid_dimensions, db_left, db_right)
 
-u_proto = ComponentArray(temp1 = zeros(n_cells), temp2 = zeros(n_cells))
+u_proto = ComponentArray(vel_x = zeros(n_cells), vel_y = zeros(n_cells), vel_z = zeros(n_cells), pressure = zeros(n_cells))
 
 for cell_id in 1:n_cells
-    u_proto.temp1[cell_id] = bc_sys.boundary_map.temp1[cell_id].initial
-    u_proto.temp2[cell_id] = bc_sys.boundary_map.temp2[cell_id].initial
+    u_proto.vel_x[cell_id] = bc_sys.boundary_map.vel_x[cell_id].initial
+    u_proto.vel_y[cell_id] = bc_sys.boundary_map.vel_y[cell_id].initial
+    u_proto.vel_z[cell_id] = bc_sys.boundary_map.vel_z[cell_id].initial
+    u_proto.pressure[cell_id] = bc_sys.boundary_map.pressure[cell_id].initial
 end
 
 cell_mat_id_map = Int[]
@@ -742,13 +825,15 @@ f_closure = (du, u, p) -> FVM_iter_f!(
     unconnected_cell_face_map, unconnected_map_respective_node_ids,
     nodes_of_cells, db_nodes_of_cells,
     cell_map, intrinsic_coordinates, 
-    cell_mat_id_map, bc_sys, heat_phys_vec, u_axes, db_grid_n_nodes
+    cell_mat_id_map, bc_sys, fluid_phys_vec, u_axes, db_grid_n_nodes
 )
 
 detector = SparseConnectivityTracer.TracerLocalSparsityDetector()
 #not sure if pure TracerSparsityDetector is faster
 
 du0 = u0 .* 0.0
+
+f_closure(du0, u0, p_guess)
 
 jac_sparsity = ADTypes.jacobian_sparsity(
     (du, u) -> f_closure(du, u, p_guess), du0, u0, detector)
@@ -791,7 +876,7 @@ f_closure_implicit = (du, u, p, t) -> FVM_iter_f!(
     du, u, p, t,
     cell_neighbor_map, respective_node_ids, cell_sets, nodes_of_cells, db_nodes_of_cells,
     cell_map, intrinsic_coordinates,
-    cell_mat_id_map, bc_sys, heat_phys_vec, u_axes, db_grid_n_nodes
+    cell_mat_id_map, bc_sys, fluid_phys_vec, u_axes, db_grid_n_nodes
 )
 #just re-add t to the FVM_iter_f! function above to make it compatible with implicit solving
 
@@ -910,7 +995,7 @@ function loss(θ)
     
     scaled_physics_loss = physics_loss(pred_u) / initial_physics_loss 
 
-    #current_vol = get_total_volume(θ) # first arg is ignored in our helper
+    #current_vol = get_total_volume(θ) 
     #println(current_vol)
     #vol_loss = abs2(current_vol - initial_volume)
 
@@ -918,6 +1003,10 @@ function loss(θ)
 
     return (1.0 * scaled_physics_loss) #+ (vol_loss)
 end
+
+using ForwardDiff
+ForwardDiff.gradient(loss, p_guess)
+#This takes soooooooooo long
 
 new_guess_params = initial_parameters
 
@@ -931,14 +1020,11 @@ optprob = Optimization.OptimizationProblem(optf, new_guess_params)
 
 #@VSCodeServer.profview for a FlameGraph
 
-using ForwardDiff
-@time ForwardDiff.gradient(loss, p_guess)
-@VSCodeServer.profview ForwardDiff.gradient(loss, p_guess)
 
 @VSCodeServer.profview res = Optimization.solve(
     optprob, OptimizationOptimJL.BFGS(), 
     callback = cb,
-    f_abstol = 1e-6,
+    f_abstol = 1e-6, 
     g_abstol = 1e-6,
     maxiters = 100
 )
