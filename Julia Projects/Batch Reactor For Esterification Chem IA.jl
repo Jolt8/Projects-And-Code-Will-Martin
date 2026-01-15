@@ -52,6 +52,7 @@ function van_t_hoft(K_eq1, T1, T2, heat_of_reaction)
     R_GAS = 8.314u"J/(mol*K)"
     return K_eq1 * exp((-heat_of_reaction / R_GAS) * (1/T2 - 1/T1))
 end
+
 function K_gibbs_free(T_ref, T_actual, ΔG_rxn_ref, ΔH_rxn_ref)
     T_actual = uconvert(u"K", T_actual) # Ensure T is a plain number in Kelvin
 
@@ -70,7 +71,7 @@ function reversible_pressure_rate_law(reaction, temperature, concentrations_dict
     # 1. Calculate forward and reverse rate constants at the current temperature
     kf = arrenhius_equation_rate_constant(reaction.kf_A, reaction.kf_Ea, temperature)
     kr = arrenhius_equation_rate_constant(reaction.kr_A, reaction.kr_Ea, temperature)
-
+    
     forward_term = 1.0u"L^0" # Initialize with a unitless 1
     for (reactant, nu) in reaction.reactants
         concentration = max(concentrations_dict[reactant], 0.0u"mol/L")
