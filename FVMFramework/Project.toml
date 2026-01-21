@@ -1,0 +1,32 @@
+name = "FVMFramework"
+uuid = "3bea8ca0-a952-4872-be97-bc38a725671f"
+version = "0.1.0"
+authors = ["Will Martin"]
+
+[deps]
+ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
+AlgebraicMultigrid = "2169fc97-5a83-5252-b627-83903c6c433c"
+ComponentArrays = "b0b7db55-cfe3-40fc-9ded-d10e2dbeff66"
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+Ferrite = "c061ca5d-56c9-439f-9c0e-210fe06d3992"
+ILUZero = "88f59080-6952-5380-9ea5-54057fb9a43f"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+NonlinearSolve = "8913a72c-1f9b-4ce2-8d82-65094dcecaec"
+Optimization = "7f7a1694-90dd-40f0-9382-eb1efda571ba"
+OptimizationOptimJL = "36348300-93cb-4f02-beb5-3c3902f8871e"
+OptimizationPolyalgorithms = "500b13db-7e66-49ce-bda4-eed966be6282"
+ProfileView = "c46f51b8-102a-5cf2-8d2c-8597cb0e0da7"
+RecursiveArrayTools = "731186ca-8d62-57ce-b412-fbd966d074cd"
+SciMLSensitivity = "1ed8b502-d754-442c-8d5d-10ac956f44a1"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+SparseConnectivityTracer = "9f842d2f-2579-4b1d-911e-f412cf18a3f5"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
+
+[compat]
+ADTypes = "1.21.0"
+AlgebraicMultigrid = "1.1.0"
+Logging = "1.11.0"
+SparseConnectivityTracer = "1.1.3"
