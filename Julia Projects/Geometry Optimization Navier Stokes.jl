@@ -495,12 +495,12 @@ function numerical_flux(k_avg, T_L, T_R, area, dist)
     return q * area
 end
 
-function get_prop_harmonic_mean(prop_a, prop_b)
+function prop_harmonic_mean(prop_a, prop_b)
     return 2 * prop_a * prop_b / (prop_a + prop_b)
 end
 
 function upwind(u_left, u_right, mass_flow_rate)
-    if mass_flow_rate > 0
+    if mass_flow_rate > 0.0
         return u_left
     else 
         return u_right
@@ -811,7 +811,6 @@ db_grid_n_nodes = length(db_grid.nodes)
 unflattened_p = eachcol(reshape(p_guess, 3, db_grid_n_nodes))
 
 new_node_coordinates = apply_ffd_motion(unflattened_p, db_nodes_of_cells, cell_map, intrinsic_coordinates)
-
 
 #= 
 NOTE: We might have to declare these as constant to prevent dynamic dispatch in the future but we're leaving this out for now

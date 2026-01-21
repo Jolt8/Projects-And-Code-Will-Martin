@@ -551,7 +551,7 @@ function FVM_iter_f!(
 
     #grad_p = Vector{MVector{3, T}}(undef, n_cells)
 
-    grad_p = [Real[0.0, 0.0, 0.0] for _ in 1:n_cells]
+    grad_p = [T[0.0, 0.0, 0.0] for _ in 1:n_cells]
     
     # Loop over internal faces for Gradients
     for (i, (A, B)) in enumerate(cell_neighbor_map)
@@ -588,6 +588,7 @@ function FVM_iter_f!(
     end
 
     # Normalize Gradients by Volume
+    #=
     for i in 1:n_cells
         grad_p[i] = grad_p[i] / u.pressure[i] #and this one, (4th issue)
         #all cause errors for ForwardDiff.gradient erroring with 
@@ -599,6 +600,7 @@ function FVM_iter_f!(
             Float64(::Int8) at float.jl:60
         =#
     end
+    =#
 
     for (i, (A, B)) in enumerate(cell_neighbor_map)
         #A is the cell_id of the current cell and B is the cell_id of the neighboring cell
@@ -898,8 +900,6 @@ println("timed forward problem")
 @VSCodeServer.profview sol = solve(prob, NonlinearSolve.NewtonRaphson(concrete_jac = true), p=p_guess)
 
 no = 1
-
-#=
 
 # Implicit Solving Stuff Below (just add t after p to the FVM_iter_f! function)
 #=
