@@ -39,11 +39,6 @@ end
 using Interpolations
 Re2f = linear_interpolation(Re_range, f_vals)
 
-struct foom
-    zoop::Interpolations.Extrapolation
-end
-
-
 channel_diameter = 3.0u"mm"
 
 channel_radius = channel_diameter / 2

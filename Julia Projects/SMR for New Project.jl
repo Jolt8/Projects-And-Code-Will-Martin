@@ -678,7 +678,6 @@ plot!(catalyst_weights, mole_flow_CO_values, linewidth=2, marker=:circle, marker
 plot!(catalyst_weights, mole_flow_H2_values, linewidth=2, marker=:circle, markersize=3)
 plot!(catalyst_weights, mole_flow_CO2_values, linewidth=2, marker=:circle, markersize=3)
 
-
 plt2 = plot!(twinx(plt2), catalyst_weights, wattages_required,
     ylabel="Heat Input (W)",
     legend=:false, 
