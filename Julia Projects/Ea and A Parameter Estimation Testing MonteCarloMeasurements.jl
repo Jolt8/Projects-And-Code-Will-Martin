@@ -840,7 +840,7 @@ for trial in all_trials_data
     ethyl_acetate_moles = trial.ethyl_acetate_moles .* u"mol"
     water_moles = trial.water_moles .* u"mol"
 
-    mixture_volume = 50u"ml"
+    mixture_volume = (50 ± 0.1)u"ml"
     mixture_rho = 1000.0u"kg/m^3"
 
     acetic_acid_mw = 60.05u"g/mol"
@@ -1113,6 +1113,7 @@ results[min_idx].Loss
 #0.03102647047431776
 
 #using Plots
+
 plot(Ea_range, A_range)
 plot(Ea_range, loss_range)
 
