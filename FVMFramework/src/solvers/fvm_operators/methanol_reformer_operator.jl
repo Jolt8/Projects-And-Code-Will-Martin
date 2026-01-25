@@ -1,4 +1,13 @@
 
+struct MethanolReformerPhysicsBCs <: MultiPhysicsBCs #this also defines the order of each variable in u used in the future
+    vel_x_bcs::Vector{VelBC}
+    vel_y_bcs::Vector{VelBC}
+    vel_z_bcs::Vector{VelBC}
+    pressure_bcs::Vector{PressureBC}
+    temp_bcs::Vector{HeatBC}
+    chem_bcs::Vector{ChemBC}
+end
+
 function methanol_reformer_f!(
         du, u, p, t,
         cell_neighbor_map,
@@ -9,8 +18,7 @@ function methanol_reformer_f!(
         #connection areas, normals, and distances are simply accessed by their location in the 
         #list which corresponds to the respective connection in cell_neighbor_map
         species_molecular_weights,
-        cell_props_id_map, bc_sys::BoundarySystem, chem_phys::Vector{ChemPhysics}, #heat_phys::Vector{HeatPhysics}, 
-        molar_concentrations_cache, net_rates_cache,
+        cell_props_id_map, bc_sys::AbstractBoundarySystem, chem_phys::Vector{ChemPhysics}, #heat_phys::Vector{HeatPhysics}, 
         ax, n_reactions, n_species
     )
 
@@ -30,14 +38,52 @@ function methanol_reformer_f!(
         k_a = chem_phys[prop_a].k #maybe use heat_phys later
         k_b = chem_phys[prop_b].k
 
-        connection_area = connection_areas[i]
-        connection_distance = connection_distances[i]
+        area = connection_areas[i]
+        dist = connection_distances[i]
+        norm = connection_normals[i]
+
+        mw_avg_a = get_mw_avg(u.mass_fractions[idx_a], species_molecular_weights)
+        mw_avg_b = get_mw_avg(u.mass_fractions[idx_a], species_molecular_weights)
+
+        rho_a = cell_rho_ideal(u.pressure[idx_a], u.temp[idx_a], mw_avg_a)
+        rho_b = cell_rho_ideal(u.pressure[idx_b], u.temp[idx_b], mw_avg_b)
+
+        #mutating-ish, it mutates du.pressure for a and b
+        face_m_dot = continuity_and_momentum_darcy(
+            @view(du.pressure[idx_a]), @view(du.pressure[idx_a]),
+            u.temp[idx_a], u.temp[idx_b], 
+            u.pressure[idx_a], u.pressure[idx_b], 
+            area, norm, dist,
+            cell_volumes[idx_a], cell_volumes[idx_b],
+            rho_a, rho_b,
+            mu_a, mu_b, #TODO: find mu for a and b
+            mw_avg_a, mw_avg_b,
+            chem_phys[prop_a].permeability
+        )
 
         diffusion_temp_exchange!(
-            du.temp[idx_a], du.temp[idx_b],
+            @view(du.temp[idx_a]), @view(du.temp[idx_b]),
             u.temp[idx_a], u.temp[idx_b],
-            connection_area, connection_distance,
+            area, dist,
             k_a, k_b,
+        )
+
+        species_advection!(
+            @view(du.mass_fractions[idx_a]), @view(du.mass_fractions[idx_b]), 
+            face_m_dot, 
+            u.mass_fractions[idx_a], u.mass_fractions[idx_b],
+            area, norm, dist, 
+            rho_a, rho_b,
+            species_molecular_weights
+        )
+
+        enthalpy_advection!(
+            @view(du.temp[idx_a]), @view(du.temp[idx_b]),
+            face_m_dot, 
+            u.temp[idx_a], u.temp[idx_b], 
+            area, norm, dist, 
+            chem_phys[prop_a].cp, chem_phys[prop_b].cp,
+            species_molecular_weights
         )
     end
 
@@ -50,35 +96,40 @@ function methanol_reformer_f!(
         vol = cell_volumes[cell_id]
         props = cell_props_id_map[cell_id]
 
+        mw_avg_cell = get_mw_avg(u.mass_fractions[cell_id], species_molecular_weights)
+
         k = chem_phys[props].k
-        rho = chem_phys[props].rho
+        rho = cell_rho_ideal(u.pressure[cell_id], u.temp[cell_id], mw_avg_cell)
         cp  = chem_phys[props].cp
-        cell_chemical_reactions_vec = chem_phys[props].chemical_reactions
-
-
+        reactions = chem_phys[props].chemical_reactions
 
         #chemical reactions loop
-        #species_mass_fractions = u.mass_fractions[:, cell_id]
+        #mass_fractions = u.mass_fractions[:, cell_id]
         cell_temp = u.temp[cell_id]
-        species_mass_fractions = view(u.mass_fractions, :, cell_id) #we should maybe use views here, probably does matter that much
+        mass_fractions = view(u.mass_fractions, :, cell_id) #we should maybe use views here, probably does matter that much
         
+        #react_cell! also adds the heat of reaction to the cell 
         react_cell!(
             @view(du.mass_fractions[:, cell_id]), @view(du.temp[cell_id:cell_id]), 
             molar_concentrations_cache, net_rates_cache, 
-            species_mass_fractions, cell_temp,
+            mass_fractions, cell_temp,
             vol,
             rho, 
-            species_molecular_weights, cell_chemical_reactions_vec
+            species_molecular_weights, reactions
         )
 
         # heat source and capacity loop
         S = chem_phys[props].heat_vol_source_term * vol 
-        # we should probably create separate containers in heat_phys for both source terms on a per area and per cell basis
 
         du.temp[cell_id] += S
-        
-        cap = rho * cp * vol
+
+        # ----- CAPACITY LOOP -----
+        cell_mass = rho * vol
+        cap = cp * cell_mass
+
         du.temp[cell_id] /= cap
+        du.pressure[cell_id] /= (1 / (R_gas * u.temp[cell_id]))#not sure if pressure has to be divided by anything here, I think it's either speed of 1/sound^2 or 1/(R_gas * temp)
+        du_mass_fraction[:, cell_id] ./= cell_mass
     end
 
     for cell_id in bc_sys.dirichlet_idxs

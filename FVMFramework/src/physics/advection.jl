@@ -2,7 +2,6 @@
 
 function species_advection!(
     #mutated vars
-    m_dot_a, m_dot_b,
     du_species_mass_fractions_a, du_species_mass_fractions_b,
     #u values
     face_m_dot,

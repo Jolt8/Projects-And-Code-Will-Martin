@@ -9,8 +9,6 @@ function continuity_and_momentum_darcy(
     #NOTE!!:
     #this also returns face_m_dot even though it's a f!() function
 
-    #cached vars
-    mw_avg_cache_a, mw_avg_cache_b,
     #mutated vars
     du_pressure_a, du_pressure_b,
     #u values
@@ -22,18 +20,19 @@ function continuity_and_momentum_darcy(
     #other props 
     rho_a, rho_b, #kinda a u value because it changes with time but not explicitly tracked through u values
     mu_a, mu_b,
+    mw_avg_a, mw_avg_b,
     permeability,
     )
 
     rho_avg = 0.5 * (rho_a + rho_b)
     mu_avg = 0.5 * (mu_a + mu_b)
 
-    face_m_dot = pressure_numerical_flux(rho_avg, permeability, mu_avg, pressure_a, pressure_b, area, dist)
+    face_m_dot = get_darcy_mass_flux(rho_avg, permeability, mu_avg, pressure_a, pressure_b, area, dist)
 
-    term_a = (face_m_dot / vol_a) * (R_gas * temp_a / mw_avg_cache_a)
+    term_a = (face_m_dot / vol_a) * (R_gas * temp_a / mw_avg_a)
     du_pressure_a -= term_a
 
-    term_b = (face_m_dot / vol_b) * (R_gas * temp_b / mw_avg_cache_b)
+    term_b = (face_m_dot / vol_b) * (R_gas * temp_b / mw_avg_b)
     du_pressure_b += term_b
 
     return face_m_dot

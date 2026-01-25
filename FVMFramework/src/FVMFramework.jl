@@ -8,7 +8,7 @@ using SciMLSensitivity
 using Optimization
 using OptimizationPolyalgorithms
 using Zygote
-using Enzyme
+#using Enzyme
 using RecursiveArrayTools
 using OptimizationOptimJL
 using ILUZero
@@ -39,11 +39,14 @@ export rebuild_fvm_geometry, get_nodes_of_cells
 
 # Physics
 include("physics/types.jl")
-export ChemicalReaction, ChemPhysics, HeatPhysics
-export ChemBC, HeatBC, MultiPhysicsBCs, BoundarySystem
+export AbstractPhysics, AbstractReaction, AbstractBoundarySystem
+export SimpleChemPhysics, ChemPhysics
+export HeatPhysics
+export ChemBC, HeatBC, MultiPhysicsBCs
 
 include("physics/helper_functions.jl")
-export R_gas, upwind, harmonic_mean, get_cell_rho, get_cell_cp
+export R_gas, upwind, harmonic_mean, van_t_hoff, arrenhius_k
+export get_mw_avg, cell_rho_ideal, get_cell_cp
 
 include("physics/advection.jl")
 export species_advection!, enthalpy_advection!
@@ -58,17 +61,20 @@ include("physics/heat_transfer.jl")
 export get_k_effective, numerical_flux, diffusion_temp_exchange!
 
 include("physics/chemistry.jl")
+export PowerLawReaction
 export net_reaction_rate, K_gibbs_free, react_cell!
 
-# Solvers
-#include("solvers/fvm_operators.jl")
-#export FVM_iter_f!
-#future possibility if FVM_iter_f! gets too unwieldy for 
+include("physics/methanol_reforming_net_rates.jl")
+export MSRReaction, MDReaction, WGSReaction #new reaction types
+export net_reaction_rate
 
 include("solvers/preconditioners.jl")
 export iluzero, algebraicmultigrid
 
 include("solvers/fvm_operators/methanol_reformer_operator.jl")
 export methanol_reformer_f!
+
+include("solvers/fvm_operators/simple_reaction_0D.jl")
+export simple_reaction_0D_f!, SimpleReactionBoundarySystem, SimpleReactionPhysicsBCs
 
 end

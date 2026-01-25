@@ -2,7 +2,7 @@ function get_node_coordinates(grid)
     n_nodes = length(grid.nodes)
 
     node_coordinates = Vector{SVector{3, Float64}}(undef, n_nodes)
-
+    
     visited_map = Set{Int}()
 
     for node_id in 1:length(grid.nodes)
