@@ -595,6 +595,8 @@ const const_neighbor_map_respective_node_ids = neighbor_map_respective_node_ids
 n_reactions = length(reaction_physics.chemical_reactions)
 n_species = length(initial_mass_fractions)
 
+u0 = Vector(u_proto)
+
 du0 = u0 .* 0.0
 
 #Experimental data retrieval and processing
@@ -789,6 +791,8 @@ f_closure_implicit_pre = (du, u, p, t, temperature_timestamps, temperature_vec) 
     cell_props_id_map, bc_sys, chem_phys_vec, u_axes, n_reactions, n_species
 )
 
+using SparseConnectivityTracer
+
 detector = SparseConnectivityTracer.TracerLocalSparsityDetector()
 #not sure if pure TracerSparsityDetector is faster
 
@@ -806,6 +810,8 @@ trials_timestamps = []
 
 u0_for_jac = trials[1].mass_fractions_matrix[1, :, 1]
 du0_for_jac = u0_for_jac .* 0.0
+
+f_closure_implicit = (du, u, p, t) -> f_closure_implicit_pre(du, u, p, t, trials[1].temperature_timestamps, trials[1].temperatures_vec)
 
 jac_sparsity = ADTypes.jacobian_sparsity(
     (du, u) -> f_closure_implicit(du, u, p_guess, 0.0), du0_for_jac, u0_for_jac, detector)
@@ -875,13 +881,13 @@ for mass_fractions in trials_mass_fractions_results[3]
 end
 df3 = DataFrame(AA=trials_timestamps[3], AB=ethanol_mass_fractions, AC=acetic_acid_mass_fractions, AD=ethyl_acetate_mass_fractions, AE=water_mass_fractions)
 
-#=
-XLSX.writetable("esterification_simulation_results_2.xlsx", 
+
+XLSX.writetable("esterification_simulation_results_4.xlsx", 
     "T1" => df1, 
     "T2" => df2,
     "T3" => df3
 )
-=#
+
 
 println("done")
 
@@ -1003,14 +1009,12 @@ optprob = Optimization.OptimizationProblem(optf, guess_params, lb=lower_bounds, 
 @time res = Optimization.solve(
     optprob,
     #callback=cb,
-    OptimizationOptimJL.IpNewton(),
-    #LBFGS, BFGS, and Fminbox don't work well here and don't return values that are anywhere close to values defined in literature 
+    OptimizationOptimJL.LBFGS(),
+    #LBFGS, BFGS, and Fminbox don't work if the guess is very far away from the actual value
     #IPNewton works kinda fine
     f_abstol=1e-4,
     g_abstol=1e-4,
 )
-
-
 
 optimized_kf_A = exp(res.u[1])
 optimized_kf_Ea = res.u[2]
@@ -1031,8 +1035,8 @@ println("Optimized Ea: $(best_params[2]) ± $(std_errors[2])")
 
 #=
 FINAL OPTIMIZED PARAMETER FOR IA (DO NOT TOUCH)
-    - kf_A = 1420.7137027799242 ± 0.04496177269267059
-    - Ea = 62.96988585067519 ± 0.11841674095409051
+    - kf_A = 1516.363624655201 ± 0.04119270783817525
+    - Ea = 62.94210526315789 ± 0.10845499905354396
 =#
 
 #= 
