@@ -4,12 +4,12 @@ using LinearAlgebra
 using SparseArrays
 using SciMLSensitivity
 using Optimization, OptimizationPolyalgorithms, Zygote
-using Enzyme
+#using Enzyme
 using RecursiveArrayTools
 using OptimizationOptimJL
 using ILUZero
 import AlgebraicMultigrid
-import SparseConnectivityTracer, ADTypes
+#import SparseConnectivityTracer, ADTypes
 using NonlinearSolve
 import Logging
 using ComponentArrays
@@ -405,16 +405,16 @@ function K_gibbs_free(T_ref, T_actual, ΔG_rxn_ref, ΔH_rxn_ref)
 end
 
 function FVM_iter_f!(
-    du, u, p, t,
+    du, u, p, t, timestamps, temperatures_vec,
     cell_volumes,
     cell_centroids, connection_areas, connection_normals,
     #cell volumes and cell centroids are accessed at the id of the cell
     connection_distances, unconnected_areas,
     #connection areas, normals, and distances are  accessed by their location in the 
     #list which corresponds to the respective connection in cell_neighbor_map
-    species_molecular_weights, 
+    species_molecular_weights,
     cell_props_id_map, bc_sys::BoundarySystem, chem_phys::Vector{ChemPhysics}, ax, n_reactions, n_species
-    )
+)
 
     A_Ea_pairs = eachcol(reshape(p, :, n_reactions))
     #unflattened_p would be [[reaction_1_kf_A, reaction_1_kf_Ea], [reaction_2_kf_A, reaction_2_kf_Ea], etc..] 
@@ -431,6 +431,9 @@ function FVM_iter_f!(
     =#
 
     # Source and Capacity Loop
+
+    time_idx = argmin(abs.(timestamps .- t))
+
     for cell_id in bc_sys.free_idxs
         vol = cell_volumes[cell_id]
         props = cell_props_id_map[cell_id]
@@ -456,14 +459,14 @@ function FVM_iter_f!(
             kf_Ea = A_Ea_pairs[reaction_id][2]
 
             #find reverse pre exponential_factor
-            K_ref = K_gibbs_free(reaction.K_gibbs_free_ref_temp, u.temp[cell_id], reaction.delta_gibbs_free_energy, reaction.heat_of_reaction)
+            K_ref = K_gibbs_free(reaction.K_gibbs_free_ref_temp, temperatures_vec[time_idx, cell_id], reaction.delta_gibbs_free_energy, reaction.heat_of_reaction)
 
-            kr_A = (kf_A / K_ref) * exp(-reaction.heat_of_reaction / (8.314e-3 * u.temp[cell_id]))
+            kr_A = (kf_A / K_ref) * exp(-reaction.heat_of_reaction / (8.314e-3 * temperatures_vec[time_idx, cell_id]))
 
             #find reverse Ea
             kr_Ea = kf_Ea - reaction.heat_of_reaction
 
-            net_rates = [net_reaction_rate(reaction, species_molar_concentrations, u.temp[cell_id], kf_A, kf_Ea, kr_A, kr_Ea) for reaction in cell_chemical_reactions_vec]
+            net_rates = [net_reaction_rate(reaction, species_molar_concentrations, temperatures_vec[time_idx, cell_id], kf_A, kf_Ea, kr_A, kr_Ea) for reaction in cell_chemical_reactions_vec]
 
             for (species_id, species_molar_concentration) in enumerate(species_molar_concentrations)
                 change_in_species_molar_concentration = 0.0
@@ -477,10 +480,6 @@ function FVM_iter_f!(
             end
         end
     end
-    for cell_id in bc_sys.dirichlet_idxs
-        du.temp1[cell_id] = 0.0
-        du.temp2[cell_id] = 0.0
-    end
 end
 
 grid_dimensions = (1, 1, 1)
@@ -490,7 +489,7 @@ grid = generate_grid(Hexahedron, grid_dimensions, left, right)
 
 addcellset!(grid, "internal_cells", x -> x != "chicken") # all
 
-# acetic acid, ethanol, acetic_acid, water
+# acetic acid, ethanol, water, ethyl acetate
 initial_mass_fractions = [0.5, 0.5, 0.0, 0.0]
 
 acetic_acid_ethanol_esterification_rxn = ChemicalReaction(
@@ -550,11 +549,10 @@ bc_sys = BoundarySystem(boundary_map, free_idxs, dirichlet_idxs)
 n_species = length(initial_mass_fractions)
 alloc_mass_fraction_vec = zeros(n_species, n_cells)
 
-u_proto = ComponentArray(mass_fractions=alloc_mass_fraction_vec, temp=zeros(n_cells))
+u_proto = ComponentArray(mass_fractions=alloc_mass_fraction_vec)
 
 for cell_id in 1:n_cells
     u_proto.mass_fractions[:, cell_id] = chem_bcs[cell_id].initial_mass_fractions
-    u_proto.temp[cell_id] = heat_bcs[cell_id].initial_temp
 end
 
 cell_props_id_map = Int[]
@@ -568,11 +566,6 @@ for cell in CellIterator(grid)
     end
 end
 
-u_axes = getaxes(u_proto)[1]
-#we use u_proto and u_axes in the function because KrylovJL_GMRES complains when a component array from ComponentArrays.jl is passed in
-
-u0 = Vector(u_proto)
-
 initial_node_coordinates = get_node_coordinates(grid)
 
 cell_neighbor_map, neighbor_map_respective_node_ids = get_neighbor_map(grid)
@@ -580,13 +573,6 @@ cell_neighbor_map, neighbor_map_respective_node_ids = get_neighbor_map(grid)
 unconnected_cell_face_map, unconnected_map_respective_node_ids = get_unconnected_map(grid)
 
 nodes_of_cells = get_nodes_of_cells(grid)
-
-reaction_1_kf_A_guess = 10000.0
-reaction_1_kf_Ea_guess = 50.0
-
-proto_p_guess = [reaction_1_kf_A_guess, reaction_1_kf_Ea_guess] #27 element Vector{Vector{}
-
-p_guess = reduce(vcat, proto_p_guess) #81 element Vector{} # we do this because Optimization.solve(...) complains about vectors of vectors
 
 cell_volumes,
 cell_centroids, #cell volumes and cell centroids are accessed at the id of the cell
@@ -611,115 +597,12 @@ n_species = length(initial_mass_fractions)
 
 du0 = u0 .* 0.0
 
-#=
-f_closure = (du, u, p) -> FVM_iter_f!(
-    du, u, p, 
-    cell_volumes, cell_centroids, connection_areas, connection_normals, connection_distances, 
-    unconnected_areas, 
-    [0.06005, 0.04607, 0.08811, 0.018015],
-    cell_props_id_map, bc_sys, chem_phys_vec, u_axes, n_reactions
-)
-
-f_closure(u0 .* 0.0, u0, p_guess)
-
-detector = SparseConnectivityTracer.TracerLocalSparsityDetector()
-#not sure if pure TracerSparsityDetector is faster
-
-jac_sparsity = ADTypes.jacobian_sparsity(
-    (du, u) -> f_closure(du, u, p_guess), du0, u0, detector)
-
-nl_func = NonlinearFunction(f_closure, jac_prototype = float.(jac_sparsity))
-
-prob = NonlinearProblem(nl_func, u0, p_guess)
-
-println("sol time")
-
-function algebraicmultigrid(W, du, u, p, t, newW, Plprev, Prprev, solverdata)
-    if newW === nothing || newW
-        Pl = AlgebraicMultigrid.aspreconditioner(AlgebraicMultigrid.ruge_stuben(convert(AbstractMatrix, W)))
-    else
-        Pl = Plprev
-    end
-    Pl, nothing
-end
-
-function iluzero(W, du, u, p, t, newW, Plprev, Prprev, solverdata)
-    if newW === nothing || newW
-        Pl = ilu0(convert(AbstractMatrix, W))
-    else
-        Pl = Plprev
-    end
-    Pl, nothing
-end
-
-println("timed forward problem")
-#@time sol = solve(prob, FBDF(linsolve = KrylovJL_GMRES(), precs = iluzero, concrete_jac = true), saveat=t)
-
-@time sol = solve(prob, NonlinearSolve.NewtonRaphson(concrete_jac = true), p=p_guess)
-@VSCodeServer.profview sol = solve(prob, NonlinearSolve.NewtonRaphson(concrete_jac = true), p=p_guess)
-=#
-
-# Implicit Solving Stuff Below (just add t after p to the FVM_iter_f! function)
-
-f_closure_implicit = (du, u, p, t) -> FVM_iter_f!(
-    du, u, p, t,
-    cell_volumes, cell_centroids, connection_areas, connection_normals, connection_distances,
-    unconnected_areas,
-    [0.06005, 0.04607, 0.08811, 0.018015],
-    cell_props_id_map, bc_sys, chem_phys_vec, u_axes, n_reactions, n_species
-)
-#just re-add t to the FVM_iter_f! function above to make it compatible with implicit solving
-
-detector = SparseConnectivityTracer.TracerLocalSparsityDetector()
-#not sure if pure TracerSparsityDetector is faster
-
-jac_sparsity = ADTypes.jacobian_sparsity(
-    (du, u) -> f_closure_implicit(du, u, p_guess, 0.0), du0, u0, detector)
-
-ode_func = ODEFunction(f_closure_implicit, jac_prototype=float.(jac_sparsity))
-
-t0, tMax = 0.0, 1000.0
-desired_steps = 10
-dt = tMax / desired_steps
-tspan = (t0, tMax)
-t = t0:dt:tMax;
-
-test = [0.4593825, 0.37599999999999995, 0.0, 0.015999999999999997, 303]
-
-implicit_prob = ODEProblem(ode_func, test, tspan, p_guess)
-
-function iluzero(W, du, u, p, t, newW, Plprev, Prprev, solverdata)
-    if newW === nothing || newW
-        Pl = ilu0(convert(AbstractMatrix, W))
-    else
-        Pl = Plprev
-    end
-    Pl, nothing
-end
-
-@time sol = solve(implicit_prob, FBDF(linsolve=KrylovJL_GMRES(), precs=iluzero, concrete_jac=true))
-VSCodeServer.@profview solve(implicit_prob, FBDF(linsolve=KrylovJL_GMRES(), precs=iluzero, concrete_jac=true))
-
-#algebraicmultigrid is better for very large systems (not sure what the cutoff is, though)
-#=
-function test_predict(θ)
-    sol = solve(implicit_prob, FBDF(linsolve = KrylovJL_GMRES(), precs = iluzero, concrete_jac = true), p=θ, sensealg=InterpolatingAdjoint(autodiff=AutoEnzyme()))
-    return Array(sol), sol.t
-end
-=#
-
-#SteadyStateProblem with DynamicSS: Good if your system might have stability issues or if you want to leverage your existing ODE infrastructure. 
-#Also good if you might later want transient optimization.
-
-#SteadyStateProblem with SSRootfind or NonlinearProblem: Better for pure steady-state. Faster when it works. 
-#Requires a good initial guess and a well-conditioned Jacobian.
-
 #Experimental data retrieval and processing
 
 using XLSX
 using Unitful
 
-xf = XLSX.readxlsx("C://Users//wille//Desktop//Legacy-Projects-And-Code-Will-Martin//Excel Projects//esterification_data_processing_for_julia.xlsx")
+xf = XLSX.readxlsx("C://Users//wille//Desktop//Projects-And-Code-Will-Martin//Excel Projects//esterification_data_processing_for_julia.xlsx")
 
 typeof(float.(vec(xf["40C"]["A2:A10"])))
 
@@ -858,18 +741,20 @@ for trial in all_trials_data
     for i in eachindex(moles_timestamps)
         mass_fractions_matrix[i, :, :] .= [acetic_acid_mass_fractions[i], ethanol_mass_fractions[i], ethyl_acetate_mass_fractions[i], water_mass_fractions[i]]
     end
+    #mass_fractions_matrix is formatted as [time_idx, species_idx, cell_idx]
 
     for i in eachindex(temp_timestamps)
         temperature_vec[i, :] .= ustrip(trial_temperatures[i])
     end
+    #temperature_vec is formatted as [time_idx, cell_idx]
 
     trial = Trial(ustrip.(temp_timestamps), ustrip.(temperature_vec), ustrip.(moles_timestamps), moles_respective_temp_idxs, mass_fractions_matrix)
 
     push!(trials, trial)
 end
 
-trials[1]
-trials[2]
+#trials[1]
+#trials[2]
 #trials[3]
 
 errors = zeros(length(trials))
@@ -882,15 +767,138 @@ end
 update_temp_callback = PresetTimeCallback(300.0, update_temp!)
 =#
 
+u_axes = getaxes(u_proto)[1]
+#we use u_proto and u_axes in the function because KrylovJL_GMRES complains when a component array from ComponentArrays.jl is passed in
+
+u0 = Vector(u_proto)
+
+reaction_1_kf_A_guess = 1516.363624655201
+reaction_1_kf_Ea_guess = 62.94210526315789
+
+proto_p_guess = [reaction_1_kf_A_guess, reaction_1_kf_Ea_guess] #27 element Vector{Vector{}
+
+p_guess = reduce(vcat, proto_p_guess) #81 element Vector{} # we do this because Optimization.solve(...) complains about vectors of vectors
+
 mc_proto_length = n_cells * n_species
 
-trials[2].moles_respective_temp_idxs
-length(trials[2].temperature_timestamps)
-length(trials[2].temperatures_vec)
-trial_1_data.temperature_timestamps
-trial_2_data.temperature_timestamps
-trial_3_data.temperature_timestamps
+f_closure_implicit_pre = (du, u, p, t, temperature_timestamps, temperature_vec) -> FVM_iter_f!(
+    du, u, p, t, temperature_timestamps, temperature_vec,
+    cell_volumes, cell_centroids, connection_areas, connection_normals, connection_distances,
+    unconnected_areas,
+    [0.06005, 0.04607, 0.08811, 0.018015],
+    cell_props_id_map, bc_sys, chem_phys_vec, u_axes, n_reactions, n_species
+)
 
+detector = SparseConnectivityTracer.TracerLocalSparsityDetector()
+#not sure if pure TracerSparsityDetector is faster
+
+function iluzero(W, du, u, p, t, newW, Plprev, Prprev, solverdata)
+    if newW === nothing || newW
+        Pl = ilu0(convert(AbstractMatrix, W))
+    else
+        Pl = Plprev
+    end
+    Pl, nothing
+end
+
+trials_mass_fractions_results = []
+trials_timestamps = []
+
+u0_for_jac = trials[1].mass_fractions_matrix[1, :, 1]
+du0_for_jac = u0_for_jac .* 0.0
+
+jac_sparsity = ADTypes.jacobian_sparsity(
+    (du, u) -> f_closure_implicit(du, u, p_guess, 0.0), du0_for_jac, u0_for_jac, detector)
+
+for trial in trials
+    trial_u0 = trial.mass_fractions_matrix[1, :, 1]
+    trial_du0 = trial_u0 .* 0.0
+
+    f_closure_implicit = (du, u, p, t) -> f_closure_implicit_pre(du, u, p, t, trial.temperature_timestamps, trial.temperatures_vec)
+
+    ode_func = ODEFunction(f_closure_implicit, jac_prototype=float.(jac_sparsity))
+
+    trial_t0, trial_tMax = trial.temperature_timestamps[1], trial.temperature_timestamps[end]
+    tspan = (trial_t0, trial_tMax)
+    implicit_prob = ODEProblem(ode_func, trial_u0, tspan, p_guess)
+
+    @time sol = solve(implicit_prob, FBDF(linsolve=KrylovJL_GMRES(), precs=iluzero, concrete_jac=true), saveat=trial.moles_timestamps)
+
+    push!(trials_mass_fractions_results, sol.u)
+    push!(trials_timestamps, sol.t)
+end
+
+println(trials_mass_fractions_results[1])
+println(trials_timestamps[1])
+println(trials_mass_fractions_results[2])
+println(trials_timestamps[2])
+println(trials_mass_fractions_results[3])
+println(trials_timestamps[3])
+
+using DataFrames
+ethanol_mass_fractions = []
+acetic_acid_mass_fractions = []
+ethyl_acetate_mass_fractions = []
+water_mass_fractions = []
+
+for mass_fractions in trials_mass_fractions_results[1]
+    push!(ethanol_mass_fractions, mass_fractions[1])
+    push!(acetic_acid_mass_fractions, mass_fractions[2])
+    push!(ethyl_acetate_mass_fractions, mass_fractions[3])
+    push!(water_mass_fractions, mass_fractions[4])
+end
+
+df1 = DataFrame(AA=trials_timestamps[1], AB=ethanol_mass_fractions, AC=acetic_acid_mass_fractions, AD=ethyl_acetate_mass_fractions, AE=water_mass_fractions)
+
+ethanol_mass_fractions = []
+acetic_acid_mass_fractions = []
+ethyl_acetate_mass_fractions = []
+water_mass_fractions = []
+for mass_fractions in trials_mass_fractions_results[2]
+    push!(ethanol_mass_fractions, mass_fractions[1])
+    push!(acetic_acid_mass_fractions, mass_fractions[2])
+    push!(ethyl_acetate_mass_fractions, mass_fractions[3])
+    push!(water_mass_fractions, mass_fractions[4])
+end
+
+df2 = DataFrame(AA=trials_timestamps[2], AB=ethanol_mass_fractions, AC=acetic_acid_mass_fractions, AD=ethyl_acetate_mass_fractions, AE=water_mass_fractions)
+
+ethanol_mass_fractions = []
+acetic_acid_mass_fractions = []
+ethyl_acetate_mass_fractions = []
+water_mass_fractions = []
+for mass_fractions in trials_mass_fractions_results[3]
+    push!(ethanol_mass_fractions, mass_fractions[1])
+    push!(acetic_acid_mass_fractions, mass_fractions[2])
+    push!(ethyl_acetate_mass_fractions, mass_fractions[3])
+    push!(water_mass_fractions, mass_fractions[4])
+end
+df3 = DataFrame(AA=trials_timestamps[3], AB=ethanol_mass_fractions, AC=acetic_acid_mass_fractions, AD=ethyl_acetate_mass_fractions, AE=water_mass_fractions)
+
+#=
+XLSX.writetable("esterification_simulation_results_2.xlsx", 
+    "T1" => df1, 
+    "T2" => df2,
+    "T3" => df3
+)
+=#
+
+println("done")
+
+
+#algebraicmultigrid is better for very large systems (not sure what the cutoff is, though)
+#=
+function test_predict(θ)
+    sol = solve(implicit_prob, FBDF(linsolve = KrylovJL_GMRES(), precs = iluzero, concrete_jac = true), p=θ, sensealg=InterpolatingAdjoint(autodiff=AutoEnzyme()))
+    return Array(sol), sol.t
+end
+=#
+
+#SteadyStateProblem with DynamicSS: Good if your system might have stability issues or if you want to leverage your existing ODE infrastructure. 
+#Also good if you might later want transient optimization.
+
+#SteadyStateProblem with SSRootfind or NonlinearProblem: Better for pure steady-state. Faster when it works. 
+#Requires a good initial guess and a well-conditioned Jacobian.
 
 function loss(θ)
     total_loss = 0.0
@@ -899,15 +907,12 @@ function loss(θ)
         trial_u0 = Vector(trial_u0_proto)
         tspan = (trial.temperature_timestamps[1], trial.temperature_timestamps[end])
         p_adjusted = [exp(θ[1]), θ[2]]
-        prob_trial = remake(implicit_prob, u0=trial_u0, p=p_adjusted, tspan=tspan)
 
-        #=
-        if i == 2
-            current_cb = ice_callback
-        else
-            current_cb = CallbackSet()
-        end
-        =#
+        f_closure_implicit = (du, u, p, t) -> f_closure_implicit_pre(du, u, p, t, trial.temperature_timestamps, trial.temperatures_vec)
+
+        ode_func = ODEFunction(f_closure_implicit)#, jac_prototype=float.(jac_sparsity))
+
+        prob_trial = ODEProblem(ode_func, trial_u0, tspan, p_adjusted)
 
         sol = solve(
             prob_trial, Rosenbrock23(), p=p_adjusted,
@@ -924,16 +929,8 @@ function loss(θ)
         trial_error = 0.0
         for (moles_timestamp_idx, respective_temp_idxs) in enumerate(trial.moles_respective_temp_idxs)
             pred = sol.u[respective_temp_idxs][1:mc_proto_length]
-            #println(typeof(pred))
-            #println(length(pred))
             obs = vec(trial.mass_fractions_matrix[moles_timestamp_idx, :, :])
-            #println(typeof(obs))
-            #println(length(pred))
             trial_error += sum(abs2, pred .- obs)
-            #println(pred)
-            #println(obs)
-            #println(sum(abs2, pred .- obs))
-            #println(trial_error)
         end
 
         total_loss += trial_error
@@ -1006,12 +1003,14 @@ optprob = Optimization.OptimizationProblem(optf, guess_params, lb=lower_bounds, 
 @time res = Optimization.solve(
     optprob,
     #callback=cb,
-    OptimizationOptimJL.LBFGS(),
-    #BFGS and Fminbox don't work well here and don't return values that are anywhere close to values defined in literature 
+    OptimizationOptimJL.IpNewton(),
+    #LBFGS, BFGS, and Fminbox don't work well here and don't return values that are anywhere close to values defined in literature 
     #IPNewton works kinda fine
     f_abstol=1e-4,
     g_abstol=1e-4,
 )
+
+
 
 optimized_kf_A = exp(res.u[1])
 optimized_kf_Ea = res.u[2]
@@ -1032,10 +1031,8 @@ println("Optimized Ea: $(best_params[2]) ± $(std_errors[2])")
 
 #=
 FINAL OPTIMIZED PARAMETER FOR IA (DO NOT TOUCH)
-    - kf_A = 1516.363624655201
-    - 1516.363624655201 ± 0.04119270783817525
-    - Ea = 62.94210526315789
-    - 62.94210526315789 ± 0.10845499905354396
+    - kf_A = 1420.7137027799242 ± 0.04496177269267059
+    - Ea = 62.96988585067519 ± 0.11841674095409051
 =#
 
 #= 
